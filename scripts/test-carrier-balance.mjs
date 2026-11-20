@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 // 三大运营商个人卡余额：解析逻辑单元测试（不联网、不依赖真实网厅）
 // 覆盖：规则解析、内置规则套用、余额提取（多文案变体 / 负数 / 千分位 / 误命中防护）
-import { parseScrapeRule, enrichRuleWithBuiltin, extractBalance, CARRIER_RULES, CARRIER_ENTRY_URLS, SAFE_KEYWORD_BY_KEY, STORAGE_KEY_BY_NAME, detectCarrierLoggedIn, BROWSER_ARGS, CARRIER_KEEPALIVE_MS } from '../src/services/scraper_wallets.mjs';
+import { parseScrapeRule, enrichRuleWithBuiltin, extractBalance, CARRIER_RULES, CARRIER_ENTRY_URLS, SAFE_KEYWORD_BY_KEY, STORAGE_KEY_BY_NAME, detectCarrierLoggedIn, classifySessionState, BROWSER_ARGS, CARRIER_KEEPALIVE_MS } from '../src/services/scraper_wallets.mjs';
 
 const results = [];
 function check(name, pass, detail = '') {
@@ -165,6 +165,19 @@ check('电信规则标记为正文判定会话', ctRule.sessionCheck === 'text')
 check('移动规则未标记正文判定会话', cmccRule.sessionCheck !== 'text');
 // 电信只能有头窗口抓（会弹窗），保活频率必须放宽，否则每小时多弹一次窗
 check('电信保活间隔不短于 1 小时（避免每小时额外弹窗）', CARRIER_KEEPALIVE_MS.carrier_ct >= 60 * 60 * 1000);
+
+// ===== 9. 会话有效性判定（classifySessionState）=====
+// 实测：移动与电信会话失效后 URL 都不变（移动停在首页、电信停在 /web/），
+// 只查 URL 会把失效误判成「续期成功」，用户只能等下次巡检才发现掉线。
+const CT_TEXT_IN = '黄** 190****3361 普通用户 我的订单 修改密码 退出登录 手机 宽带 固话 54 .61 元 账户余额';
+const CT_TEXT_OUT = '中国电信欢迎你 登录 手机 宽带 固话 -- 账户余额 -- 已用通用流量 -- 剩余积分';
+check('跳登录页 → 判定失效', classifySessionState({ url: 'https://login.10086.cn/login.html', text: CT_TEXT_IN, rule: cmccRule }).loggedIn === false);
+check('跳登录页 → 给出原因', /跳转登录页/.test(classifySessionState({ url: 'https://login.189.cn/x', text: '', rule: ctRule }).reason));
+check('移动：带 ssoFail 标记 → 判定失效（URL 未变）', classifySessionState({ url: 'https://shop.10086.cn/i/?f=home', text: '', cookies: [{ name: 'ssoFail' }], rule: cmccRule }).loggedIn === false);
+check('移动：带 ssoFail 标记 → 原因写明标记名', /ssoFail/.test(classifySessionState({ url: 'https://shop.10086.cn/i/?f=home', text: '', cookies: [{ name: 'ssoFail' }], rule: cmccRule }).reason));
+check('移动：无标记 → 判定有效', classifySessionState({ url: 'https://shop.10086.cn/i/?f=home', text: '', cookies: [{ name: 'lgToken' }], rule: cmccRule }).loggedIn === true);
+check('电信：正文已回未登录 → 判定失效（URL 仍是 /web/）', classifySessionState({ url: 'https://www.189.cn/web/', text: CT_TEXT_OUT, cookies: [], rule: ctRule, keywords: SAFE_KEYWORD_BY_KEY.carrier_ct }).loggedIn === false);
+check('电信：正文含余额与退出登录 → 判定有效', classifySessionState({ url: 'https://www.189.cn/web/', text: CT_TEXT_IN, cookies: [], rule: ctRule, keywords: SAFE_KEYWORD_BY_KEY.carrier_ct }).loggedIn === true);
 
 const fail = results.filter((r) => !r.pass);
 console.log(`\n结果：共 ${results.length} 项，通过 ${results.length - fail.length}，失败 ${fail.length}`);

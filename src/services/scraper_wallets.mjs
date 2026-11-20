@@ -670,6 +670,25 @@ export async function scrapeWalletBalance({ url, rule, debugLabel = '平台', he
   }
 }
 
+// 判定一次访问后网厅会话是否还有效（纯函数，便于单测）
+// 返回 { loggedIn, reason }：
+//   - 跳登录页 → 失效
+//   - 服务端下发失效标记 cookie（移动 ssoFail）→ 失效（URL 仍停在首页）
+//   - 规则要求用正文判定（电信）且正文已无登录标识 → 失效（URL 仍停在 /web/）
+export function classifySessionState({ url = '', text = '', cookies = [], rule = {}, keywords = null }) {
+  if (/login|passport|signin/i.test(url)) {
+    return { loggedIn: false, reason: '跳转登录页' };
+  }
+  const markers = (rule?.sessionFailMarkers || []).filter((m) => (cookies || []).some((c) => c.name === m));
+  if (markers.length) {
+    return { loggedIn: false, reason: `服务端下发会话失效标记 ${markers.join(',')}` };
+  }
+  if (rule?.sessionCheck === 'text' && !detectCarrierLoggedIn(text, keywords)) {
+    return { loggedIn: false, reason: '页面已无登录标识' };
+  }
+  return { loggedIn: true, reason: '' };
+}
+
 // 运营商会话续期（保活）：只访问网厅首页触发服务端滑动续期，并把续期后的 cookie 写回。
 // 与抓取余额的区别：
 //   - 不提取余额、不写 balance_history、不触发充值单（保活每 10 分钟跑一次，
@@ -687,21 +706,12 @@ export async function renewCarrierSession({ url, storageFile, rule, keywords, de
       await page.waitForTimeout(6000);
       const text = await page.evaluate(() => (document.body ? document.body.innerText : '')).catch(() => '');
       const currentUrl = page.url();
-      // 跳到登录页 = 会话已失效；此时写回只会把过期状态存回去，不写
-      if (/login|passport|signin/i.test(currentUrl)) {
-        return { ok: false, loggedIn: false, url: currentUrl, reason: '跳转登录页' };
-      }
-      // 服务端失效标记（实测：移动会话作废时下发 ssoFail，URL 仍停在首页）
-      // 不查这个会漏判，保活会误报「续期成功」，用户只能等下次巡检才发现掉线
+      // 会话是否还有效：跳登录页 / 服务端失效标记 / 正文已无登录标识
+      // 三种情况都不能只看 URL——实测移动与电信失效后 URL 都不变
       const cookies = await context.cookies().catch(() => []);
-      const markers = (rule?.sessionFailMarkers || []).filter((m) => cookies.some((c) => c.name === m));
-      if (markers.length) {
-        return { ok: false, loggedIn: false, url: currentUrl, reason: `服务端下发会话失效标记 ${markers.join(',')}` };
-      }
-      // 正文判定（189.cn 首页直接带余额与「退出登录」）：会话作废后 URL 仍是 /web/，
-      // 只有正文能看出已回到未登录态
-      if (rule?.sessionCheck === 'text' && !detectCarrierLoggedIn(text, keywords)) {
-        return { ok: false, loggedIn: false, url: currentUrl, reason: '页面已无登录标识' };
+      const state = classifySessionState({ url: currentUrl, text, cookies, rule, keywords });
+      if (!state.loggedIn) {
+        return { ok: false, loggedIn: false, url: currentUrl, reason: state.reason };
       }
       const persisted = await persistStorageState(context, storageFile);
       return { ok: persisted, loggedIn: true, url: currentUrl, textLength: text.length };
