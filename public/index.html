@@ -46,6 +46,12 @@
     .hidden { display:none; }
     .picon { width:20px; height:20px; display:inline-block; vertical-align:-4px; margin-right:8px; flex-shrink:0; }
     .pname { display:inline-flex; align-items:center; }
+    /* 运营商登录态倒计时：平台名下方两行小字（预计存活 / 续命），不占新列 */
+    .sess-box { margin-top:4px; font-size:11px; line-height:1.7; color:#64748b; }
+    .sess-line { white-space:nowrap; }
+    .sess-line b { color:#334155; font-weight:600; font-variant-numeric:tabular-nums; }
+    .sess-bad { color:var(--red); font-weight:600; }
+    .sess-dim { color:#94a3b8; }
     /* 操作反馈：右上角 toast */
     .toast-wrap { position:fixed; top:16px; right:16px; z-index:999; display:flex; flex-direction:column; gap:8px; pointer-events:none; }
     .toast { pointer-events:auto; max-width:380px; padding:10px 14px; border-radius:8px; font-size:13px; line-height:1.6; box-shadow:0 4px 14px rgba(0,0,0,.14); background:#fff; border:1px solid var(--border); animation:toastIn .18s ease-out; word-break:break-word; }
@@ -394,6 +400,72 @@
     async function loadPlatforms() {
       platformsCache = await api('/api/platforms');
       renderPlatforms();
+      loadCarrierSessions();
+    }
+
+    // ===== 运营商登录态倒计时 =====
+    // 两个倒计时（需求对齐结论）：
+    //   预计存活 = 关键会话 cookie 的过期倒计时（登录态真正失效的时刻）
+    //   续命     = 下一次真正访问网厅的时刻 = 保活与余额巡检中较早的那个
+    // 服务端返回绝对时间戳，前端本地走秒，不重拉整表。
+    let carrierSessions = {};
+    let carrierSessionsFetchedAt = 0;
+
+    function fmtCountdown(ms) {
+      if (ms == null) return '—';
+      if (ms <= 0) return '00:00';
+      const s = Math.floor(ms / 1000);
+      const d = Math.floor(s / 86400);
+      const h = Math.floor((s % 86400) / 3600);
+      const m = Math.floor((s % 3600) / 60);
+      const sec = s % 60;
+      const p2 = (n) => String(n).padStart(2, '0');
+      if (d > 0) return `${d}天${p2(h)}时`;
+      if (h > 0) return `${h}:${p2(m)}:${p2(sec)}`;
+      return `${p2(m)}:${p2(sec)}`;
+    }
+
+    function renderCarrierSessions() {
+      const now = Date.now();
+      document.querySelectorAll('.sess-box').forEach((box) => {
+        const pid = Number(box.dataset.pid);
+        const s = carrierSessions[pid];
+        if (!s) { box.innerHTML = ''; return; }
+        if (s.state === 'not_logged_in') {
+          box.innerHTML = '<div class="sess-line sess-bad">未登录</div>';
+          return;
+        }
+        if (s.state === 'expired') {
+          box.innerHTML = '<div class="sess-line sess-bad">已过期，需重新登录</div>';
+          return;
+        }
+        if (s.state === 'uncalibrated') {
+          box.innerHTML = '<div class="sess-line sess-dim">存活时间未标定</div>';
+          return;
+        }
+        if (s.state === 'key_unknown') {
+          box.innerHTML = '<div class="sess-line sess-bad">登录态异常，需重新登录</div>';
+          return;
+        }
+        const ttl = s.expiresAt ? s.expiresAt - now : null;
+        const renew = s.nextRenewAt ? s.nextRenewAt - now : null;
+        const tip = s.keyCookie ? `关键会话 cookie：${s.keyCookie}` : '';
+        box.innerHTML =
+          `<div class="sess-line" title="${esc(tip)}">预计存活 <b>${fmtCountdown(ttl)}</b></div>` +
+          `<div class="sess-line" title="${esc(s.renewSource === 'keepalive' ? '保活访问网厅续期' : '余额巡检访问网厅续期')}">续命 <b>${fmtCountdown(renew)}</b></div>`;
+      });
+    }
+
+    async function loadCarrierSessions() {
+      try {
+        const r = await api('/api/carriers/session');
+        carrierSessions = {};
+        for (const s of (r.sessions || [])) carrierSessions[s.platform_id] = s;
+        carrierSessionsFetchedAt = Date.now();
+        renderCarrierSessions();
+      } catch (e) {
+        // 运营商会话接口不可用不影响主列表，静默处理
+      }
     }
     function renderPlatforms() {
       const list = platformsCache;
@@ -425,7 +497,7 @@
         const isLow = p.latest_balance != null && p.latest_balance < (p.threshold ?? 200);
         return `
         <tr${isLow ? ' class="low-balance"' : ''}>
-          <td><span class="pname">${iconFor(p)}<b>${esc(p.name)}</b></span></td>
+          <td><span class="pname">${iconFor(p)}<b>${esc(p.name)}</b></span>${isCarrier(p.provider) ? `<div class="sess-box" data-pid="${p.id}"></div>` : ''}</td>
           <td>${providerLabel(p)}</td>
           <td id="bal-cell-${p.id}">${balanceBadge(p.latest_balance, p.threshold)} ${esc(p.currency)}</td>
           <td>${p.threshold}</td>
@@ -870,6 +942,10 @@
     loadPlatforms();
     loadFund();
     setInterval(() => { loadPlatforms(); loadFund(); }, 60000);
+    // 运营商登录态倒计时：本地每秒走秒，每 10 秒重新拉一次会话状态
+    // （拉取是为了拿到保活/巡检续期后的新时间戳；走秒只是本地计算，不发请求）
+    setInterval(renderCarrierSessions, 1000);
+    setInterval(loadCarrierSessions, 10000);
   </script>
 </body>
 </html>

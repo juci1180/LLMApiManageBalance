@@ -10,11 +10,22 @@ import { spawn } from 'node:child_process';
 import fs from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { dirname, join } from 'node:path';
-import { storageKeyFor, storageFileFor } from './services/scraper_wallets.mjs';
+import { storageKeyFor, storageFileFor, CARRIER_RULES, CARRIER_KEEPALIVE_MS, ruleKeyFor } from './services/scraper_wallets.mjs';
+import { buildSessionStatus } from './services/session_status.mjs';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const PROJECT_ROOT = join(__dirname, '..');
 const LOGIN_LOG = join(PROJECT_ROOT, 'src', 'wallet-states', 'login-run.log');
+
+// 余额巡检周期（毫秒）。续命倒计时需要它：巡检本身也是一次访问网厅。
+function monitorIntervalMs() {
+  try {
+    const cfg = JSON.parse(fs.readFileSync(join(PROJECT_ROOT, 'config.json'), 'utf-8'));
+    return cfg.monitor?.intervalMs ?? 3600000;
+  } catch {
+    return 3600000;
+  }
+}
 
 let loginRunning = false;
 
@@ -89,6 +100,57 @@ export async function registerRoutes(fastify) {
     const p = db.prepare('SELECT * FROM platforms WHERE id = ?').get(req.params.id);
     if (!p) return { exists: false, key: null };
     return { exists: Boolean(storageFileFor(p.name, p.provider, p.id)), key: storageKeyForPlatform(p) };
+  });
+
+  // 运营商登录态的两个倒计时：预计存活（关键会话 cookie 过期）与续命（下次访问网厅）
+  // 前端每 10 秒拉一次，按返回的绝对时间戳本地走秒，避免整表重渲染。
+  fastify.get('/api/carriers/session', async () => {
+    const rows = db.prepare(
+      "SELECT * FROM platforms WHERE active = 1 AND provider LIKE 'carrier_%' ORDER BY id"
+    ).all();
+    const sessions = [];
+    for (const p of rows) {
+      const providerKey = ruleKeyFor(p.name, p.provider);
+      const rule = CARRIER_RULES[providerKey] || {};
+      const file = storageFileFor(p.name, p.provider, p.id);
+      let cookies = null;
+      if (file) {
+        try {
+          cookies = JSON.parse(fs.readFileSync(file, 'utf8')).cookies || null;
+        } catch {
+          cookies = null;
+        }
+      }
+      const num = (key) => {
+        const row = db.prepare('SELECT value FROM settings WHERE key = ?').get(key);
+        return Number(row?.value || 0);
+      };
+      const status = buildSessionStatus({
+        cookies,
+        spec: rule.sessionCookie ?? null,
+        observedAlive: num(`session_alive_${p.id}`) === 0 ? false : (num(`session_alive_${p.id}`) > 0 ? true : null),
+        timing: {
+          keepAliveIntervalMs: CARRIER_KEEPALIVE_MS[p.provider] || 0,
+          monitorIntervalMs: monitorIntervalMs(),
+          lastKeepAliveAt: num(`keepalive_at_${p.id}`),
+          lastMonitorAt: num(`monitor_at_${p.id}`),
+        },
+      });
+      // 服务端已明确判定未登录（上次抓取报「未登录」）时，覆盖 cookie 过期时间的乐观估计：
+      // cookie 文件里可能还留着未过期的票据，但服务端已不认这个会话了。
+      if (p.latest_error && /未登录|跳转登录页/.test(p.latest_error)) {
+        status.state = 'not_logged_in';
+        status.ttlMs = null;
+        status.expiresAt = null;
+      }
+      sessions.push({
+        platform_id: p.id,
+        name: p.name,
+        provider: p.provider,
+        ...status,
+      });
+    }
+    return { sessions, now: Date.now() };
   });
 
   // ===== 平台面板 =====

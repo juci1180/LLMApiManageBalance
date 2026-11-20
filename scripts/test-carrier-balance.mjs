@@ -2,6 +2,7 @@
 // 三大运营商个人卡余额：解析逻辑单元测试（不联网、不依赖真实网厅）
 // 覆盖：规则解析、内置规则套用、余额提取（多文案变体 / 负数 / 千分位 / 误命中防护）
 import { parseScrapeRule, enrichRuleWithBuiltin, extractBalance, CARRIER_RULES, CARRIER_ENTRY_URLS, SAFE_KEYWORD_BY_KEY, STORAGE_KEY_BY_NAME, detectCarrierLoggedIn, classifySessionState, BROWSER_ARGS, CARRIER_KEEPALIVE_MS, storageKeyFor, ruleKeyFor } from '../src/services/scraper_wallets.mjs';
+import { pickKeySessionCookie, buildSessionStatus } from '../src/services/session_status.mjs';
 
 const results = [];
 function check(name, pass, detail = '') {
@@ -193,6 +194,104 @@ check('移动：带 ssoFail 标记 → 原因写明标记名', /ssoFail/.test(cl
 check('移动：无标记 → 判定有效', classifySessionState({ url: 'https://shop.10086.cn/i/?f=home', text: '', cookies: [{ name: 'lgToken' }], rule: cmccRule }).loggedIn === true);
 check('电信：正文已回未登录 → 判定失效（URL 仍是 /web/）', classifySessionState({ url: 'https://www.189.cn/web/', text: CT_TEXT_OUT, cookies: [], rule: ctRule, keywords: SAFE_KEYWORD_BY_KEY.carrier_ct }).loggedIn === false);
 check('电信：正文含余额与退出登录 → 判定有效', classifySessionState({ url: 'https://www.189.cn/web/', text: CT_TEXT_IN, cookies: [], rule: ctRule, keywords: SAFE_KEYWORD_BY_KEY.carrier_ct }).loggedIn === true);
+
+// ===== 10. 登录态两个倒计时（预计存活 / 续命） =====
+// 关键会话 cookie 不能取「最早过期的那个」：登录态里混着当天就过期的 SDK cookie
+// 与 1 年期的长期 cookie，取最早的会得到假值（电信会显示 7 小时而不是 7 天）。
+const NOW = 1_700_000_000_000; // 固定基准时间，避免测试随真实时间漂移
+const HOUR = 3600_000;
+
+check('移动规则声明了关键会话 cookie', cmccRule.sessionCookie?.exact === 'chargeresource');
+check('电信规则声明了关键会话 cookie', ctRule.sessionCookie?.suffix === 'T' && ctRule.sessionCookie?.siblingSuffix === 'S');
+check('联通未标定关键会话 cookie', CARRIER_RULES.carrier_cu.sessionCookie === null);
+
+// 移动登录态（实测结构）：chargeresource 30 分钟滑动窗口，其余是会话 cookie / 长期 cookie
+const CMCC_COOKIES = [
+  { name: 'lgToken', expires: -1 },
+  { name: 'CmLocation', expires: NOW / 1000 + 129600 * 60 },
+  { name: 'chargeresource', expires: NOW / 1000 + 30 * 60 },
+];
+// 电信登录态（实测结构）：当天就过期的 SDK cookie + 7 天票据 + 1 年票据
+// 注意：cookie 的 expires 单位是「秒」，下面用 HOUR / 1000 换算
+const CT_COOKIES = [
+  { name: 'sajssdk_2015_cross_new_user', expires: NOW / 1000 + 7 * HOUR / 1000 },
+  { name: 'yiUIIlbdQT3fS', expires: NOW / 1000 + 365 * 24 * HOUR / 1000 },
+  { name: 'yiUIIlbdQT3fT', expires: NOW / 1000 + 7 * 24 * HOUR / 1000 },
+];
+
+const cmccKey = pickKeySessionCookie(CMCC_COOKIES, cmccRule.sessionCookie);
+check('移动：选中 chargeresource', cmccKey?.name === 'chargeresource');
+check('移动：不受长期 cookie 干扰', cmccKey && Math.round((cmccKey.expires * 1000 - NOW) / 60000) === 30);
+
+const ctKey = pickKeySessionCookie(CT_COOKIES, ctRule.sessionCookie);
+check('电信：选中 7 天那枚（xxxT）', ctKey?.name === 'yiUIIlbdQT3fT');
+check('电信：不受当天过期的 SDK cookie 干扰', ctKey && Math.round((ctKey.expires * 1000 - NOW) / HOUR) === 7 * 24);
+check('电信：随机前缀也能识别（换前缀仍选中 T）',
+  pickKeySessionCookie([
+    { name: 'zzQQxx0001S', expires: NOW / 1000 + 365 * 24 * HOUR / 1000 },
+    { name: 'zzQQxx0001T', expires: NOW / 1000 + 7 * 24 * HOUR / 1000 },
+  ], ctRule.sessionCookie)?.name === 'zzQQxx0001T');
+check('电信：没有 S 兄弟时不误选', pickKeySessionCookie([{ name: 'yyyT', expires: NOW / 1000 + 7 * 24 * HOUR / 1000 }], ctRule.sessionCookie) === null);
+
+// 会话状态：有效 / 过期 / 未登录 / 未标定
+const stOk = buildSessionStatus({ cookies: CMCC_COOKIES, spec: cmccRule.sessionCookie, now: NOW });
+check('会话有效 → state=ok', stOk.state === 'ok');
+check('会话有效 → 剩余时间约 30 分钟', Math.round(stOk.ttlMs / 60000) === 30);
+check('会话有效 → 认出关键 cookie', stOk.keyCookie === 'chargeresource');
+
+const stExpired = buildSessionStatus({
+  cookies: [{ name: 'chargeresource', expires: NOW / 1000 - 60 }],
+  spec: cmccRule.sessionCookie, now: NOW,
+});
+check('关键 cookie 已过期 → state=expired', stExpired.state === 'expired');
+check('已过期 → 剩余时间为负', stExpired.ttlMs < 0);
+
+check('无登录态 → state=not_logged_in', buildSessionStatus({ cookies: null, spec: cmccRule.sessionCookie, now: NOW }).state === 'not_logged_in');
+check('空 cookie 列表 → state=not_logged_in', buildSessionStatus({ cookies: [], spec: cmccRule.sessionCookie, now: NOW }).state === 'not_logged_in');
+check('未标定 → state=uncalibrated', buildSessionStatus({ cookies: CMCC_COOKIES, spec: null, now: NOW }).state === 'uncalibrated');
+check('有登录态但认不出关键 cookie → state=key_unknown',
+  buildSessionStatus({ cookies: [{ name: 'xxx', expires: NOW / 1000 + 600 }], spec: cmccRule.sessionCookie, now: NOW }).state === 'key_unknown');
+
+// 续命倒计时 = 下一次访问网厅 = 保活与余额巡检中较早的那个
+const stRenew = buildSessionStatus({
+  cookies: CMCC_COOKIES, spec: cmccRule.sessionCookie, now: NOW,
+  timing: {
+    keepAliveIntervalMs: 10 * 60 * 1000,
+    monitorIntervalMs: HOUR,
+    lastKeepAliveAt: NOW - 5 * 60 * 1000,  // 保活 10 分钟节奏 → 5 分钟后到期
+    lastMonitorAt: NOW - 30 * 60 * 1000,   // 巡检 1 小时节奏 → 30 分钟后到期
+  },
+});
+check('续命取较早的那个（保活 5 分钟 < 巡检 30 分钟）', stRenew.nextRenewAt === NOW + 5 * 60 * 1000);
+check('续命来源标记为 keepalive', stRenew.renewSource === 'keepalive');
+
+const stRenewMonitor = buildSessionStatus({
+  cookies: CMCC_COOKIES, spec: cmccRule.sessionCookie, now: NOW,
+  timing: {
+    keepAliveIntervalMs: 12 * HOUR,
+    monitorIntervalMs: HOUR,
+    lastKeepAliveAt: NOW - 11 * HOUR,
+    lastMonitorAt: NOW - 10 * 60 * 1000,   // 巡检 50 分钟后到期，比保活早
+  },
+});
+check('续命取巡检时（电信：巡检 1 小时 < 保活 12 小时）', stRenewMonitor.nextRenewAt === NOW + 50 * 60 * 1000);
+check('续命来源标记为 monitor', stRenewMonitor.renewSource === 'monitor');
+
+check('从未保活/巡检 → 无续命时刻', buildSessionStatus({
+  cookies: CMCC_COOKIES, spec: cmccRule.sessionCookie, now: NOW,
+  timing: { keepAliveIntervalMs: 10 * 60 * 1000, monitorIntervalMs: HOUR, lastKeepAliveAt: 0, lastMonitorAt: 0 },
+}).nextRenewAt === null);
+
+// 观测到的会话状态优先于 cookie 过期时间的乐观估计：
+// 实测（2026-11-20）电信的 7 天票据尚未过期，服务端已作废会话、页面已回未登录态。
+check('观测到已掉线 → state=not_logged_in（尽管票据未过期）',
+  buildSessionStatus({ cookies: CT_COOKIES, spec: ctRule.sessionCookie, observedAlive: false, now: NOW }).state === 'not_logged_in');
+check('观测到已掉线 → 不再给剩余时间',
+  buildSessionStatus({ cookies: CT_COOKIES, spec: ctRule.sessionCookie, observedAlive: false, now: NOW }).ttlMs === null);
+check('观测到存活 → 仍按 cookie 过期时间算',
+  buildSessionStatus({ cookies: CMCC_COOKIES, spec: cmccRule.sessionCookie, observedAlive: true, now: NOW }).state === 'ok');
+check('未观测过（null）→ 不覆盖 cookie 判定',
+  buildSessionStatus({ cookies: CMCC_COOKIES, spec: cmccRule.sessionCookie, observedAlive: null, now: NOW }).state === 'ok');
 
 const fail = results.filter((r) => !r.pass);
 console.log(`\n结果：共 ${results.length} 项，通过 ${results.length - fail.length}，失败 ${fail.length}`);

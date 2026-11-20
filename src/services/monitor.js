@@ -69,6 +69,16 @@ export async function runMonitorCycle() {
       await Promise.all(slice.map(async (p) => {
         // 1. 刷新余额
         const r = await refreshPlatformBalance(p.id);
+        // 巡检本身就访问了网厅（无论是否抓到余额），因此这是本平台的一次「续命时机」。
+        // 续命倒计时 = 下一次访问网厅 = 巡检与保活中较早的那个，所以失败也要记时刻。
+        if (String(p.provider || '').startsWith('carrier_')) {
+          setSetting(`monitor_at_${p.id}`, Date.now());
+          // 记录本次观测到的会话状态（地面真相）：抓成功 = 会话有效；
+          // 报错且指向登录页 = 会话已失效。倒计时不能只靠 cookie 过期时间乐观估计——
+          // 电信的 7 天票据还在时，会话也可能已被服务端作废（实测：票据未过期但页面已回未登录态）。
+          const dead = r.ok === false && /未登录|跳转登录页/.test(String(r.error || ''));
+          setSetting(`session_alive_${p.id}`, r.ok ? 1 : (dead ? 0 : 1));
+        }
         if (!r.ok) {
           results.errors.push({ platformId: p.id, error: r.error });
           return;
@@ -156,8 +166,11 @@ export function startCarrierKeepAlive() {
         });
         if (r.ok) {
           console.log(`[keepalive] ${p.name} 会话续期成功`);
+          setSetting(`session_alive_${p.id}`, 1);
         } else if (r.loggedIn === false) {
           console.warn(`[keepalive] ${p.name} 会话已失效（${r.reason || '跳转 ' + r.url}），需重新运行 node scripts/wallet-login.mjs ${storageKeyFor(p.name, p.provider, p.id)}`);
+          // 保活直接访问了网厅，它对会话是否有效的判断比 cookie 过期时间更可信
+          setSetting(`session_alive_${p.id}`, 0);
           // 主动推送：保活比巡检更早发现会话失效（巡检要等 1 小时），
           // 同一平台 6 小时内只推一次，避免反复打扰
           const pushKey = `keepalive_push_${p.id}`;

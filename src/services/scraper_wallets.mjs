@@ -177,6 +177,8 @@ export const CARRIER_RULES = {
     // 会话失效标记（实测 2026-11-20）：服务端在会话作废时下发 ssoFail cookie，
     // 此时 URL 仍是首页、不会跳登录页——只查 URL 会漏判，导致保活误报「续期成功」。
     sessionFailMarkers: ['ssoFail'],
+    // 关键会话 cookie：决定登录态还能活多久的那一枚（实测 30 分钟滑动窗口）
+    sessionCookie: { exact: 'chargeresource' },
   },
   carrier_ct: {
     balanceKeywords: ['可用余额', '本月可用余额', '账户余额', '当前余额'],
@@ -195,6 +197,9 @@ export const CARRIER_RULES = {
     // 189.cn 首页直接带余额与「退出登录」，访问后可用正文判定会话是否还在，
     // 不必只靠 URL（实测：会话作废后仍停在 /web/，URL 看不出异常）
     sessionCheck: 'text',
+    // 关键会话 cookie：网厅每次访问下发的「同前缀成对票据」中较短的那枚（7 天窗口）。
+    // 前缀是随机的（如 yiUIIlbdQT3f），不能硬编码全名——按「后缀 T + 存在同前缀 S 兄弟」识别。
+    sessionCookie: { suffix: 'T', siblingSuffix: 'S' },
   },
   carrier_cu: {
     balanceKeywords: ['可用余额', '账户当前可用余额', '账户余额', '当前余额'],
@@ -202,6 +207,9 @@ export const CARRIER_RULES = {
     // 实测：联通首页余额入口在 hover 展开的「查询」二级菜单里（首页无余额链接），
     // 顺序为「先展开一级菜单，再点二级入口」
     entries: ['查询', '余额查询', '余量查询', '账户余额', '查话费'],
+    // 联通未联调，关键会话 cookie 尚未标定。此时不能随便取「最早过期的 cookie」——
+    // 那是 SDK cookie 的假值（电信会显示 7 小时而不是 7 天）。未标定前显示「未标定」。
+    sessionCookie: null,
     exclude: ['账户总', '总额', '累计', '预存', '冻结', '赠费'],
   },
 };
@@ -231,6 +239,8 @@ export function enrichRuleWithBuiltin(rule, name, provider) {
       sessionFailMarkers: rule.sessionFailMarkers ?? carrier.sessionFailMarkers ?? null,
       // 会话有效性判定方式：'text' = 用页面正文判定（会话作废后 URL 可能不变）
       sessionCheck: rule.sessionCheck ?? carrier.sessionCheck ?? null,
+      // 关键会话 cookie 声明：决定「预计存活」倒计时取哪一枚 cookie
+      sessionCookie: rule.sessionCookie ?? carrier.sessionCookie ?? null,
     };
   }
   if (key) {
@@ -550,6 +560,16 @@ async function scrapeOnePage(page, { url, rule, debugLabel = '平台', waitMs = 
   const text = await page.evaluate(() => (document.body ? document.body.innerText : ''));
   const balance = extractBalance(text, rule);
   if (balance === null) {
+    // 提取不到余额时，先分清「会话已失效」与「页面结构变了」——
+    // 实测（2026-11-20）：电信会话作废后，首页仍带「账户余额」标签但值是 "--"，
+    // 关键字会命中、余额提不出来，于是报成「页面中未找到余额」，把掉线伪装成页面异常。
+    // 规则要求用正文判定会话时（电信），检查正文里还有没有登录标识。
+    if (rule?.sessionCheck === 'text') {
+      const alive = detectCarrierLoggedIn(text, rule.keywords);
+      if (!alive) {
+        throw new Error(`${debugLabel} 未登录（页面已无登录标识，余额显示为占位符）`);
+      }
+    }
     throw new Error(`${debugLabel}: 页面中未找到余额（关键字="${rule.keyword}"）`);
   }
   return balance;
