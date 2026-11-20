@@ -63,10 +63,11 @@ node scripts/wallet-login.mjs carrier_cu     # 中国联通
 # 或一次跑完：node scripts/wallet-login.mjs
 
 # 3) 无头验证抓取结果
-node scripts/wallet-check.mjs
+node scripts/wallet-check.mjs                  # 全部抓取型平台（含三家运营商）
+node scripts/wallet-check.mjs carrier_cmcc      # 只验一家
 
 # 4) 测试
-npm test                                  # 端到端冒烟（31 项）
+npm test                                  # 端到端冒烟（37 项）
 node scripts/test-carrier-balance.mjs     # 运营商解析单元测试（37 项）
 
 # 5) 本地启动
@@ -75,7 +76,7 @@ npm run dev
 
 实测结果（本次改动后）：
 
-- `npm test` → 31 项全部通过，exit 0
+- `npm test` → 37 项全部通过，exit 0（新增 6 项运营商端到端用例：登录态检测、未登录时刷新返回结构化失败、错误提示指向登录脚本、抓取失败不生成充值单、不写入余额历史）
 - `node scripts/test-carrier-balance.mjs` → 37 项全部通过，exit 0
 - 真实网厅抓取**未做联调**：需要你的登录态，且网厅存在地区差异与风控，无法在无你的参与下取得真实余额。
 
@@ -119,7 +120,7 @@ npm run dev
 | 解析正确性 | 运行 `node scripts/test-carrier-balance.mjs` | 37 项全通过，含负余额、千分位、栏目名不误命中、结构不符返回 null |
 | 存量不受影响 | 运行 `npm test` | 31 项全通过，已有平台行为不变 |
 | 登录流程 | 运行 `node scripts/wallet-login.mjs carrier_cmcc`，在弹窗输入服务密码 | 提示「登录成功，登录态已保存到 src/wallet-states/storage_carrier_cmcc.json」 |
-| 抓取可用 | 运行 `node scripts/wallet-check.mjs` | 运营商行输出 `OK 中国移动话费 : <数值>`；未登录则输出可读错误 |
+| 抓取可用 | 运行 `node scripts/wallet-check.mjs carrier_cmcc` | 输出 `OK 中国移动话费 : <数值>`；未登录则输出可读错误并列出缺登录态的平台 |
 | 未登录可读性 | 删除某运营商登录态文件后刷新该平台 | 返回「尚未登录 xxx：请先运行 node scripts/wallet-login.mjs carrier_xx」而非 500 |
 | 失败不误建单 | 抓取失败后检查充值单列表 | 不产生新充值单（失败返回 null 而非 0） |
 | 降级可用 | 把运营商平台 `balance_type` 改为 `manual` 并录入余额 | 前端显示正常，低于阈值时正常生成充值单 |
@@ -144,7 +145,7 @@ npm run dev
 5. 删掉 `scripts/setup-carrier-platforms.mjs` 与 `scripts/test-carrier-balance.mjs`。
 6. 数据库里删除三条 `provider LIKE 'carrier_%'` 的平台记录即可，已有平台数据不受影响。
 
-回滚后 `npm test` 仍应 31 项全通过。
+回滚后 `npm test` 仍应 31 项（不含运营商新增的 6 项）全通过。
 
 ## 9. 官方文档出处
 
