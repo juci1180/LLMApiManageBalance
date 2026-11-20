@@ -46,6 +46,18 @@
     .hidden { display:none; }
     .picon { width:20px; height:20px; display:inline-block; vertical-align:-4px; margin-right:8px; flex-shrink:0; }
     .pname { display:inline-flex; align-items:center; }
+    /* 操作反馈：右上角 toast */
+    .toast-wrap { position:fixed; top:16px; right:16px; z-index:999; display:flex; flex-direction:column; gap:8px; pointer-events:none; }
+    .toast { pointer-events:auto; max-width:380px; padding:10px 14px; border-radius:8px; font-size:13px; line-height:1.6; box-shadow:0 4px 14px rgba(0,0,0,.14); background:#fff; border:1px solid var(--border); animation:toastIn .18s ease-out; word-break:break-word; }
+    .toast.ok { background:#ecfdf5; border-color:#a7f3d0; color:#065f46; }
+    .toast.err { background:#fef2f2; border-color:#fecaca; color:#991b1b; }
+    .toast.info { background:#eff6ff; border-color:#bfdbfe; color:#1e40af; }
+    @keyframes toastIn { from { opacity:0; transform:translateY(-8px); } to { opacity:1; transform:none; } }
+    .toast.out { opacity:0; transform:translateY(-8px); transition:opacity .2s ease-in, transform .2s ease-in; }
+    /* 余额刷新成功后该格闪一下，直观表示"这行数据刚刚更新过" */
+    @keyframes cellFlash { 0% { background:#dcfce7; } 100% { background:transparent; } }
+    .cell-flash { animation: cellFlash 1.4s ease-out; }
+    button.loading { opacity:.7; cursor:progress; }
   </style>
 </head>
 <body>
@@ -415,13 +427,13 @@
         <tr${isLow ? ' class="low-balance"' : ''}>
           <td><span class="pname">${iconFor(p)}<b>${esc(p.name)}</b></span></td>
           <td>${providerLabel(p)}</td>
-          <td>${balanceBadge(p.latest_balance, p.threshold)} ${esc(p.currency)}</td>
+          <td id="bal-cell-${p.id}">${balanceBadge(p.latest_balance, p.threshold)} ${esc(p.currency)}</td>
           <td>${p.threshold}</td>
           <td>${p.recharge_amount}</td>
           <td>${p.latest_error ? `<span class="badge err" title="${esc(p.latest_error)}">抓取失败</span>` : (p.active ? '<span class="badge ok">启用</span>' : '<span class="badge err">停用</span>')}</td>
           <td class="row-actions">
             ${(p.balance_type === 'scrape' || isCarrier(p.provider)) ? `<button class="primary" onclick="openLogin(${p.id})" id="login-btn-${p.id}">登录</button>` : ''}
-            <button onclick="refreshOne(${p.id})">刷新余额</button>
+            <button id="refresh-btn-${p.id}" onclick="refreshOne(${p.id})">刷新余额</button>
             <button onclick="inputBalance(${p.id})">录入余额</button>
             <button onclick="editPlatform(${p.id})">编辑</button>
             <button class="danger" onclick="delPlatform(${p.id})">删除</button>
@@ -568,7 +580,47 @@
       document.body.removeChild(a);
     }
 
-    async function refreshOne(id) { await api(`/api/platforms/${id}/refresh`, { method:'POST' }); loadPlatforms(); }
+    // 右上角轻提示：成功/失败都给即时反馈，避免用户对着没变化的页面猜
+    function showToast(msg, type = 'info', ms = 3600) {
+      let wrap = document.querySelector('#toast-wrap');
+      if (!wrap) {
+        wrap = document.createElement('div');
+        wrap.id = 'toast-wrap';
+        wrap.className = 'toast-wrap';
+        document.body.appendChild(wrap);
+      }
+      const el = document.createElement('div');
+      el.className = 'toast ' + type;
+      el.textContent = msg;   // 用 textContent：错误文案可能含平台返回的原始内容
+      wrap.appendChild(el);
+      setTimeout(() => {
+        el.classList.add('out');
+        setTimeout(() => el.remove(), 240);
+      }, ms);
+    }
+
+    async function refreshOne(id) {
+      const btn = document.querySelector(`#refresh-btn-${id}`);
+      const label = btn ? btn.textContent : '刷新余额';
+      const p = platformsCache.find(x => x.id === id);
+      const name = p ? p.name : `平台#${id}`;
+      if (btn) { btn.disabled = true; btn.textContent = '刷新中…'; btn.classList.add('loading'); }
+      try {
+        const r = await api(`/api/platforms/${id}/refresh`, { method:'POST' });
+        await loadPlatforms();
+        // 余额格子闪一下，标明"这一行刚刚更新过"
+        const cell = document.querySelector(`#bal-cell-${id}`);
+        if (cell) { cell.classList.remove('cell-flash'); void cell.offsetWidth; cell.classList.add('cell-flash'); }
+        const cur = (p && p.currency) || 'CNY';
+        showToast(`✓ ${name} 刷新成功，余额 ${r.balance == null ? '未获取到' : r.balance + ' ' + cur}`, 'ok');
+      } catch (e) {
+        await loadPlatforms();   // 让表格显示"抓取失败"标记
+        showToast(`✗ ${name} 刷新失败：${e.message}`, 'err', 7000);
+      } finally {
+        const b = document.querySelector(`#refresh-btn-${id}`);
+        if (b) { b.disabled = false; b.textContent = label; b.classList.remove('loading'); }
+      }
+    }
     async function inputBalance(id) {
       const v = prompt('输入当前余额：');
       if (v == null) return;

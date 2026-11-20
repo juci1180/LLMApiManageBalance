@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 // 三大运营商个人卡余额：解析逻辑单元测试（不联网、不依赖真实网厅）
 // 覆盖：规则解析、内置规则套用、余额提取（多文案变体 / 负数 / 千分位 / 误命中防护）
-import { parseScrapeRule, enrichRuleWithBuiltin, extractBalance, CARRIER_RULES, CARRIER_ENTRY_URLS, SAFE_KEYWORD_BY_KEY, STORAGE_KEY_BY_NAME } from '../src/services/scraper_wallets.mjs';
+import { parseScrapeRule, enrichRuleWithBuiltin, extractBalance, CARRIER_RULES, CARRIER_ENTRY_URLS, SAFE_KEYWORD_BY_KEY, STORAGE_KEY_BY_NAME, detectCarrierLoggedIn, BROWSER_ARGS } from '../src/services/scraper_wallets.mjs';
 
 const results = [];
 function check(name, pass, detail = '') {
@@ -102,6 +102,31 @@ check('结构不符返回 null', extractBalance('欢迎光临中国移动通信'
 // max 上限：超出上限的金额不采信
 const cappedRule = enrichRuleWithBuiltin(parseScrapeRule('{"max":50}'), '中国移动话费', 'carrier_cmcc');
 check('超出 max 上限不采信', extractBalance('账户余额 ¥999.00', cappedRule) === null);
+
+// ===== 4. 运营商登录判定（防未登录误判） =====
+// 2026-11-20 实测：189.cn 未登录首页文本。关键点——「账户余额」等标签未登录时也在页面上，
+// 只是值为 "--"。若只按标签出现判定登录，会导出无效登录态，后续巡检永远抓不到余额。
+const CT_ANON = '公告：关于规范互联网渠道售卡管理的公告 中国电信携号转网服务实施细则 ' +
+  '收藏电信网网站无障碍关爱版专区 个人 政企 北京 服务大厅 查询服务 充值交费 亲友服务 ' +
+  '号卡服务 宽带服务 客服咨询 业务办理 生活服务 中国电信欢迎你 登录 手机 宽带 固话 -- ' +
+  '账户余额 -- 已用通用流量 -- 已用通用语音 -- 剩余积分 充值 更多充值 10 元 30 元 50 元';
+check('电信未登录首页不算已登录', detectCarrierLoggedIn(CT_ANON, SAFE_KEYWORD_BY_KEY.carrier_ct) === false);
+check('电信未登录首页不被标签误命中', detectCarrierLoggedIn(CT_ANON, ['账户余额']) === false);
+
+// 登录后：右上角出现「退出登录」
+check('出现「退出登录」即已登录', detectCarrierLoggedIn('中国电信欢迎您 已登录 退出登录 账户余额 55.30元', SAFE_KEYWORD_BY_KEY.carrier_ct) === true);
+// 登录后：没有退出文案，但余额标签后跟真实数字
+check('余额标签后跟数字即已登录', detectCarrierLoggedIn('中国电信欢迎您 账户余额 55.30元 已用通用流量 12.00', SAFE_KEYWORD_BY_KEY.carrier_ct) === true);
+// 占位符 "--" 不算数字
+check('占位符不算已登录', detectCarrierLoggedIn('账户余额 -- 已用通用流量 --', SAFE_KEYWORD_BY_KEY.carrier_ct) === false);
+// 标签与数字之间夹了别的中文标签，不算余额位
+check('标签与数字间夹中文不算已登录', detectCarrierLoggedIn('账户余额 详见详情 55.30元', SAFE_KEYWORD_BY_KEY.carrier_ct) === false);
+
+// ===== 5. 浏览器启动参数：189.cn 反自动化拦截 =====
+// 2026-11-20 实测对照：不加 AutomationControlled 时 189.cn 返回空页面（正文 0 字、html 39 字符），
+// 加上后正常渲染并跳到 /web/。少了这个参数，电信登录与巡检都拿不到任何内容。
+check('启动参数含关闭 AutomationControlled', BROWSER_ARGS.includes('--disable-blink-features=AutomationControlled'));
+check('启动参数仍保留 DeviceBoundSessions 禁用', BROWSER_ARGS.some(a => a.includes('DeviceBoundSessions')));
 
 const fail = results.filter((r) => !r.pass);
 console.log(`\n结果：共 ${results.length} 项，通过 ${results.length - fail.length}，失败 ${fail.length}`);

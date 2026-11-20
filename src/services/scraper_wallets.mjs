@@ -78,10 +78,33 @@ export const SAFE_KEYWORD_BY_KEY = {
   volc: '可用余额',
   // 三大运营商个人卡：登录后网厅右上角出现"退出登录"；部分省份版本不显示退出文字，
   // 登录后首页/余额页会出现余额标签，因此两者并用，任一命中即视为已登录
+  // 注意：运营商的标签必须配合「后面跟真实数字」才算已登录，见 detectCarrierLoggedIn
   carrier_cmcc: ['退出登录', '退出', '账户余额', '账户可用余额', '可用余额', '当前余额'],
   carrier_ct: ['退出登录', '退出', '账户余额', '本月可用余额', '可用余额', '当前余额'],
   carrier_cu: ['退出登录', '退出', '账户余额', '账户当前可用余额', '可用余额', '当前余额'],
 };
+
+// 运营商网厅登录判定。
+// 为什么不能只看标签是否出现（实测 2026-11-20，189.cn 未登录首页文本）：
+//   "…中国电信欢迎你 登录 手机 宽带 固话 -- 账户余额 -- 已用通用流量 -- 剩余积分 充值…"
+//   未登录时「账户余额」等标签就在页面上，只是值为 "--"。若只按标签出现判断，
+//   会把未登录页面误判成已登录，导出一份无效登录态，后续巡检永远抓不到余额。
+// 规则：满足任一条即视为已登录
+//   1. 页面出现登录后专属文案「退出登录 / 退出」（未登录态不存在，实测出现次数为 0）
+//   2. 余额标签后面紧跟真实数字（分隔符不超过 12 个，不允许夹杂其他中文标签）
+export function detectCarrierLoggedIn(text, keywords) {
+  if (!text) return false;
+  if (text.includes('退出登录') || text.includes('退出')) return true;
+  const keyList = (Array.isArray(keywords) ? keywords : [keywords]).filter(Boolean);
+  const SEP = '[\\s:：()（）¥￥元]{0,12}';
+  const NUM = '-?\\d[\\d,]*(?:\\.[0-9]{1,2})?';
+  for (const k of keyList) {
+    if (k === '退出登录' || k === '退出') continue;   // 已在上方单独处理
+    const re = new RegExp(`${k}${SEP}(${NUM})`);
+    if (re.test(text)) return true;
+  }
+  return false;
+}
 
 // 内置各平台精确提取正则（按登录态 key 匹配）：
 // 与规则里的 regex 字段等价，但无需用户配置——抓取时自动套用。
@@ -319,11 +342,16 @@ export function storageFileFor(name, fallbackKey = null) {
 //  - 禁用 Device Bound Sessions：腾讯云/小米/阿里云等平台使用 Chrome 设备绑定会话时，
 //    cookie 绑定在启动它的 Chrome 实例上，关闭浏览器后重新启动即失效；
 //    禁用后这些平台回退到普通 cookie，登录态才能跨实例持久保存。
+//  - 关闭 AutomationControlled：Playwright 默认会把 navigator.webdriver 置为 true，
+//    189.cn（电信网厅）据此判定为自动化客户端，直接返回空页面（正文 0 字，html 仅 39 字符）。
+//    实测对照（2026-11-20）：不加该参数正文 0 字；加上后正常渲染并跳到 /web/，
+//    页面出现「账户余额」等业务文案。因此该参数是电信网厅能打开的前提。
 // 注意：登录脚本（wallet-login.mjs）也必须用同一组参数，否则登录态与抓取环境不一致。
 export const BROWSER_ARGS = [
   '--no-sandbox',
   '--disable-setuid-sandbox',
   '--disable-features=DeviceBoundSessions,DeviceBoundSessionsV2',
+  '--disable-blink-features=AutomationControlled',
 ];
 
 // 定位可用的浏览器可执行文件。

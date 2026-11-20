@@ -11,7 +11,7 @@ import path from 'node:path';
 import { dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import db, { initSchema } from '../src/db/index.js';
-import { parseScrapeRule, STORAGE_DIR, STORAGE_KEY_BY_NAME, BROWSER_ARGS, SAFE_KEYWORD_BY_KEY } from '../src/services/scraper_wallets.mjs';
+import { parseScrapeRule, STORAGE_DIR, STORAGE_KEY_BY_NAME, BROWSER_ARGS, SAFE_KEYWORD_BY_KEY, detectCarrierLoggedIn } from '../src/services/scraper_wallets.mjs';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 
@@ -61,7 +61,10 @@ async function waitLoggedIn(page, keyword, timeoutMs = 10 * 60 * 1000) {
       const text = await page.evaluate(() => (document.body ? document.body.innerText : ''));
       // keyword 可能是字符串或候选数组（运营商页面文案多变，任一命中即算命中）
       const kws = Array.isArray(keyword) ? keyword : [keyword];
-      const hit = kws.some((k) => k && text.includes(k));
+      const isCarrier = /^carrier_/.test(p.key);
+      // 运营商网厅：标签在未登录态也存在（如 189.cn 首页的「账户余额 --」），
+      // 必须用 detectCarrierLoggedIn 判定，避免把未登录页面误判成已登录并导出无效登录态
+      const hit = isCarrier ? detectCarrierLoggedIn(text, kws) : kws.some((k) => k && text.includes(k));
       const ok = !isLoginUrl(url) && (!keyword || hit);
       // 诊断日志：每 10 秒打印一次当前 URL 和关键字命中情况，便于排查登录卡住
       const elapsed = Date.now() - start;
