@@ -156,6 +156,16 @@ check('移动保活间隔 < 30 分钟窗口', CARRIER_KEEPALIVE_MS.carrier_cmcc 
 check('电信保活间隔 < 7 天窗口', CARRIER_KEEPALIVE_MS.carrier_ct < 7 * 24 * 3600 * 1000);
 check('保活间隔不短于 1 分钟（避免过于频繁）', Object.values(CARRIER_KEEPALIVE_MS).every(v => v >= 60 * 1000));
 
+// ===== 8. 会话失效判定（实测 2026-11-20）=====
+// 移动：服务端在会话作废时下发 ssoFail cookie，URL 仍停在首页——只看 URL 会漏判，
+// 保活会误报「续期成功」，用户只能等下次巡检才发现掉线。
+check('移动规则标记了会话失效标记 ssoFail', Array.isArray(cmccRule.sessionFailMarkers) && cmccRule.sessionFailMarkers.includes('ssoFail'));
+// 电信：会话作废后 URL 仍是 /web/，首页带余额与「退出登录」，可用正文判定
+check('电信规则标记为正文判定会话', ctRule.sessionCheck === 'text');
+check('移动规则未标记正文判定会话', cmccRule.sessionCheck !== 'text');
+// 电信只能有头窗口抓（会弹窗），保活频率必须放宽，否则每小时多弹一次窗
+check('电信保活间隔不短于 1 小时（避免每小时额外弹窗）', CARRIER_KEEPALIVE_MS.carrier_ct >= 60 * 60 * 1000);
+
 const fail = results.filter((r) => !r.pass);
 console.log(`\n结果：共 ${results.length} 项，通过 ${results.length - fail.length}，失败 ${fail.length}`);
 if (fail.length) {

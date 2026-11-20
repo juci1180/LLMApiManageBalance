@@ -3,7 +3,7 @@ import db from '../db/index.js';
 import { refreshPlatformBalance } from './balance.js';
 import { maybeCreateRechargeOrder, notifyOrder, tryCreditOrder } from './recharge.js';
 import { sendPhoneNotify } from './push.js';
-import { CARRIER_KEEPALIVE_MS, CARRIER_RULES, CARRIER_ENTRY_URLS, renewCarrierSession, storageFileFor } from './scraper_wallets.mjs';
+import { CARRIER_KEEPALIVE_MS, CARRIER_RULES, CARRIER_ENTRY_URLS, SAFE_KEYWORD_BY_KEY, renewCarrierSession, storageFileFor } from './scraper_wallets.mjs';
 import { readFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -146,11 +146,17 @@ export function startCarrierKeepAlive() {
         // 只访问 + 写回续期后的 cookie，不提取余额、不写历史、不触发充值单
         const url = p.balance_api_url || CARRIER_ENTRY_URLS[p.provider];
         const rule = CARRIER_RULES[p.provider] || {};
-        const r = await renewCarrierSession({ url, storageFile, rule, debugLabel: p.name });
+        const r = await renewCarrierSession({
+          url,
+          storageFile,
+          rule,
+          keywords: SAFE_KEYWORD_BY_KEY[p.provider],
+          debugLabel: p.name,
+        });
         if (r.ok) {
           console.log(`[keepalive] ${p.name} 会话续期成功`);
         } else if (r.loggedIn === false) {
-          console.warn(`[keepalive] ${p.name} 会话已失效（跳转 ${r.url}），需重新运行 node scripts/wallet-login.mjs ${p.provider}`);
+          console.warn(`[keepalive] ${p.name} 会话已失效（${r.reason || '跳转 ' + r.url}），需重新运行 node scripts/wallet-login.mjs ${p.provider}`);
           // 主动推送：保活比巡检更早发现会话失效（巡检要等 1 小时），
           // 同一平台 6 小时内只推一次，避免反复打扰
           const pushKey = `keepalive_push_${p.id}`;
@@ -159,7 +165,7 @@ export function startCarrierKeepAlive() {
             db.prepare('INSERT OR REPLACE INTO settings (key, value) VALUES (?, ?)').run(pushKey, String(Date.now()));
             await sendPhoneNotify(
               `⚠️ ${p.name} 登录态已失效`,
-              `保活检测到网厅会话已失效（跳转 ${r.url}）。\n请重新登录：node scripts/wallet-login.mjs ${p.provider}`
+              `保活检测到网厅会话已失效（${r.reason || '跳转 ' + r.url}）。\n请重新登录：node scripts/wallet-login.mjs ${p.provider}`
             );
             console.log(`[keepalive] 已推送登录态失效提醒: ${p.name}`);
           }

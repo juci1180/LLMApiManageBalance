@@ -152,9 +152,17 @@ export const CARRIER_ENTRY_URLS = {
 //
 // keepAliveMs：保活访问间隔，取窗口的一半留出余量。
 // 电信的窗口以天计，但 189.cn 只能有头窗口抓（会弹窗），因此间隔不宜太短。
+//
+// 实测 2026-11-20 的频率调整依据：
+//  - 电信：余额巡检本身就是每小时访问一次 189.cn 并写回续期后的 cookie，
+//    7 天窗口已经被它续住，再单独挂一个「每小时保活」属于纯冗余——而且每次
+//    都会多弹一次窗口（189.cn 拦无头，只能有头）。因此单独保活放宽到 12 小时，
+//    保留为「巡检被禁用/失败时的兜底」，弹窗从每小时 2 次降到 1 次。
+//  - 移动：窗口 30 分钟，保活 10 分钟一次，实测会话仍在登录后约 30 分钟失效
+//    （保活续不了硬上限），但保活能第一时间发现失效标记并提醒用户重新登录，故保留。
 export const CARRIER_KEEPALIVE_MS = {
   carrier_cmcc: 10 * 60 * 1000,   // 窗口 30 分钟 → 每 10 分钟访问一次
-  carrier_ct: 60 * 60 * 1000,    // 窗口 7 天 → 每小时一次（且需有头弹窗）
+  carrier_ct: 12 * 60 * 60 * 1000, // 窗口 7 天，巡检已每小时续期 → 每 12 小时兜底一次
   carrier_cu: 30 * 60 * 1000,    // 联通未联调，先按 30 分钟保守取值
 };
 
@@ -166,6 +174,9 @@ export const CARRIER_RULES = {
     entries: ['余额查询', '余量查询', '话费余额', '我的移动'],
     // 实测同页并存「可用余额 70.90元」与「账户总余额 0.00元」，后者不是话费余额
     exclude: ['账户总', '总额', '累计', '预存', '冻结', '赠费'],
+    // 会话失效标记（实测 2026-11-20）：服务端在会话作废时下发 ssoFail cookie，
+    // 此时 URL 仍是首页、不会跳登录页——只查 URL 会漏判，导致保活误报「续期成功」。
+    sessionFailMarkers: ['ssoFail'],
   },
   carrier_ct: {
     balanceKeywords: ['可用余额', '本月可用余额', '账户余额', '当前余额'],
@@ -181,6 +192,9 @@ export const CARRIER_RULES = {
     // 菜单文字按常见网厅路径依次尝试
     entries: ['服务大厅', '查询服务', '费用查询', '话费账单', '余额查询', '我的账户'],
     exclude: ['账户总', '总额', '累计', '预存', '冻结', '赠费'],
+    // 189.cn 首页直接带余额与「退出登录」，访问后可用正文判定会话是否还在，
+    // 不必只靠 URL（实测：会话作废后仍停在 /web/，URL 看不出异常）
+    sessionCheck: 'text',
   },
   carrier_cu: {
     balanceKeywords: ['可用余额', '账户当前可用余额', '账户余额', '当前余额'],
@@ -212,6 +226,10 @@ export function enrichRuleWithBuiltin(rule, name, provider) {
       valueBeforeLabel: rule.valueBeforeLabel ?? carrier.valueBeforeLabel ?? false,
       // 站点级拦截无头浏览器：抓取时改用有头窗口
       headlessBlocked: rule.headlessBlocked ?? carrier.headlessBlocked ?? false,
+      // 会话失效标记（服务端作废会话时下发的标记 cookie，URL 看不出异常）
+      sessionFailMarkers: rule.sessionFailMarkers ?? carrier.sessionFailMarkers ?? null,
+      // 会话有效性判定方式：'text' = 用页面正文判定（会话作废后 URL 可能不变）
+      sessionCheck: rule.sessionCheck ?? carrier.sessionCheck ?? null,
     };
   }
   if (key) {
@@ -658,7 +676,7 @@ export async function scrapeWalletBalance({ url, rule, debugLabel = '平台', he
 //     若走余额刷新会污染历史数据并让阈值判断频繁触发）；
 //   - 只访问入口页，不点菜单进余额子页——续期只需要「带着会话访问一次」。
 // 返回 { ok, loggedIn }：loggedIn=false 表示会话已失效（需要用户重新登录）。
-export async function renewCarrierSession({ url, storageFile, rule, debugLabel = '运营商' }) {
+export async function renewCarrierSession({ url, storageFile, rule, keywords, debugLabel = '运营商' }) {
   const headless = rule?.headlessBlocked !== true;
   const browser = await chromium.launch(launchOptions({ headless }));
   try {
@@ -671,7 +689,19 @@ export async function renewCarrierSession({ url, storageFile, rule, debugLabel =
       const currentUrl = page.url();
       // 跳到登录页 = 会话已失效；此时写回只会把过期状态存回去，不写
       if (/login|passport|signin/i.test(currentUrl)) {
-        return { ok: false, loggedIn: false, url: currentUrl };
+        return { ok: false, loggedIn: false, url: currentUrl, reason: '跳转登录页' };
+      }
+      // 服务端失效标记（实测：移动会话作废时下发 ssoFail，URL 仍停在首页）
+      // 不查这个会漏判，保活会误报「续期成功」，用户只能等下次巡检才发现掉线
+      const cookies = await context.cookies().catch(() => []);
+      const markers = (rule?.sessionFailMarkers || []).filter((m) => cookies.some((c) => c.name === m));
+      if (markers.length) {
+        return { ok: false, loggedIn: false, url: currentUrl, reason: `服务端下发会话失效标记 ${markers.join(',')}` };
+      }
+      // 正文判定（189.cn 首页直接带余额与「退出登录」）：会话作废后 URL 仍是 /web/，
+      // 只有正文能看出已回到未登录态
+      if (rule?.sessionCheck === 'text' && !detectCarrierLoggedIn(text, keywords)) {
+        return { ok: false, loggedIn: false, url: currentUrl, reason: '页面已无登录标识' };
       }
       const persisted = await persistStorageState(context, storageFile);
       return { ok: persisted, loggedIn: true, url: currentUrl, textLength: text.length };
