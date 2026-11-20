@@ -150,9 +150,16 @@ export const CARRIER_RULES = {
   },
   carrier_ct: {
     balanceKeywords: ['可用余额', '本月可用余额', '账户余额', '当前余额'],
-    regex: '(?:可用余额|本月可用余额|账户余额|当前余额)[\\s:：()（）¥￥元]*(-?\\d[\\d,]*(?:\\.[0-9]{1,2})?)',
-    // 实测：电信网厅在无头浏览器下反爬拦截（正文为 0），需靠桌面 Chrome 真实浏览器或
-    // 已保存的登录态文件；菜单文字按常见网厅路径依次尝试
+    // 实测（2026-11-20，189.cn 登录后首页正文节选）：
+    //   "…手机 宽带 固话 54 .61 元 账户余额 0 .00 KB 已用专用流量 0 分钟 已用通用语音 0…"
+    // 布局与移动相反——数值在上、标签在下；且数字被拆成 "54" + "\n" + ".61" 两段渲染。
+    // 因此这里用「数值在前 + 标签在后」的正则，并配合 valueBeforeLabel 兜底。
+    regex: '(-?\\d[\\d,]*(?:\\.[0-9]{1,2})?)[\\s¥￥元]{0,8}账户余额',
+    valueBeforeLabel: true,
+    // 实测：189.cn 对无头浏览器做站点级拦截（有头正文 1257 字 / 无头正文 0 字），
+    // 与 AutomationControlled 无关。该站只能用有头窗口抓（窗口短暂弹出后自动关闭）。
+    headlessBlocked: true,
+    // 菜单文字按常见网厅路径依次尝试
     entries: ['服务大厅', '查询服务', '费用查询', '话费账单', '余额查询', '我的账户'],
     exclude: ['账户总', '总额', '累计', '预存', '冻结', '赠费'],
   },
@@ -182,6 +189,10 @@ export function enrichRuleWithBuiltin(rule, name, provider) {
       max: rule.max,
       entries: rule.entries || carrier.entries,
       exclude: rule.exclude || carrier.exclude,
+      // 数值在上、标签在下（实测 189.cn 首页）：让提取走「往前找金额」的路径
+      valueBeforeLabel: rule.valueBeforeLabel ?? carrier.valueBeforeLabel ?? false,
+      // 站点级拦截无头浏览器：抓取时改用有头窗口
+      headlessBlocked: rule.headlessBlocked ?? carrier.headlessBlocked ?? false,
     };
   }
   if (key) {
@@ -210,13 +221,16 @@ export function enrichRuleWithBuiltin(rule, name, provider) {
 //   3. 排除词（exclude）：标签里带排除词的金额一律不采信。
 //      真实场景：移动网厅同页同时有「可用余额 70.90元」和「账户总余额 0.00元」，
 //      若版本差异导致先命中总余额，会把 0.00 当成欠费并错误触发充值单。
-export function extractBalance(text, { keyword, keywords, regex, max, exclude }) {
+export function extractBalance(text, { keyword, keywords, regex, max, exclude, valueBeforeLabel }) {
   const limit = max ?? 1e7;
   const excludes = Array.isArray(exclude) ? exclude.filter(Boolean) : [];
-  // 标签上下文：往后看整段匹配，往前多看几个字（用于识别「账户总余额」这类含排除词的标签）
+  // 归一化：部分网厅把一个金额拆成多段渲染（实测 189.cn 首页："54" + "\n" + ".61" + "元"），
+  // 不接回来的话只能取到整数部分 54，把 54.61 误读成 54。
+  const src = String(text ?? '').replace(/(\d)[ \t]*\n[ \t]*(\.\d)/g, '$1$2');
+  // 标签上下文：往后看整段匹配，往前多看几个字（用于识别「账户总余额」这类含排除词的标
   const isExcluded = (start, len) => {
     if (!excludes.length) return false;
-    const win = text.slice(Math.max(0, start - 6), start + len);
+    const win = src.slice(Math.max(0, start - 6), start + len);
     return excludes.some((w) => win.includes(w));
   };
   const pick = (m) => {
@@ -226,7 +240,7 @@ export function extractBalance(text, { keyword, keywords, regex, max, exclude })
   };
   if (regex) {
     // 逐个匹配检查标签是否被排除，取第一个未被排除的金额
-    for (const m of text.matchAll(new RegExp(regex, 'g'))) {
+    for (const m of src.matchAll(new RegExp(regex, 'g'))) {
       if (isExcluded(m.index, m[0].length)) continue;
       const v = pick(m);
       if (v !== null) return v;
@@ -243,19 +257,31 @@ export function extractBalance(text, { keyword, keywords, regex, max, exclude })
     const NUM = '(-?\\d[\\d,]*(?:\\.[0-9]{1,2})?)';
     const candidates = [];
     for (const k of keyList) {
-      let idx = text.indexOf(k);
+      let idx = src.indexOf(k);
       while (idx >= 0) {
         if (!isExcluded(idx, k.length)) candidates.push({ idx, k });
-        idx = text.indexOf(k, idx + k.length);
+        idx = src.indexOf(k, idx + k.length);
       }
     }
     if (!candidates.length) return null; // 关键字都没出现，视为页面结构不符
     candidates.sort((a, b) => a.idx - b.idx);
+    if (valueBeforeLabel) {
+      // 数值在上、标签在下（实测 189.cn 首页："54.61元" 出现在 "账户余额" 之前）：
+      // 先从标签位置往前找紧邻的金额，中间只允许分隔符，不允许夹其他中文标签。
+      // 找不到再走下面的「标签后跟金额」路径——其他省份版本的网厅布局相反。
+      for (const c of candidates) {
+        const before = src.slice(Math.max(0, c.idx - 40), c.idx);
+        const m = before.match(new RegExp(NUM + '[\\s¥￥元]{0,8}$'));
+        if (!m) continue;
+        const v = pick(m);
+        if (v !== null) return v;
+      }
+    }
     // 优先带货币符号的标签位置（更可能是真正的余额展示位）
-    const withSymbol = candidates.filter((c) => /[¥￥]/.test(text.slice(c.idx, c.idx + 40)));
+    const withSymbol = candidates.filter((c) => /[¥￥]/.test(src.slice(c.idx, c.idx + 40)));
     const ordered = [...withSymbol, ...candidates.filter((c) => !withSymbol.includes(c))];
     for (const c of ordered) {
-      const after = text.slice(c.idx + c.k.length);
+      const after = src.slice(c.idx + c.k.length);
       const m = after.match(new RegExp('^' + SEP + NUM));
       if (!m) continue; // 关键字与数字之间夹了别的文字，不是余额展示位
       const v = pick(m);
@@ -265,7 +291,7 @@ export function extractBalance(text, { keyword, keywords, regex, max, exclude })
   }
   // 没有任何关键字：整页取第一个在上限内的数字
   const numRe = /-?[0-9][0-9,]*(?:\.[0-9]+)?/g;
-  const matches = [...text.matchAll(numRe)].map((m) => parseFloat(m[0].replace(/,/g, '')));
+  const matches = [...src.matchAll(numRe)].map((m) => parseFloat(m[0].replace(/,/g, '')));
   const valid = matches.filter((n) => Number.isFinite(n) && Math.abs(n) <= limit);
   return valid.length ? valid[0] : null;
 }
@@ -404,6 +430,11 @@ function launchOptions(extra = {}) {
   const exe = resolveBrowserExecutable();
   return {
     ...(exe ? { executablePath: exe } : { channel: 'chromium' }),
+    // BROWSER_ARGS 默认带上（可被 extra.args 覆盖）：
+    // 189.cn 等网厅会按 navigator.webdriver 判定自动化客户端并返回空页面，
+    // 少了 --disable-blink-features=AutomationControlled 就会「登录能开、抓取打不开」。
+    // 统一放在这里，避免各启动路径各写一份而漏传。
+    args: BROWSER_ARGS,
     ...extra,
   };
 }
@@ -475,9 +506,10 @@ const HEADLESS_CONTEXT_OPTIONS = {
     'Chrome/131.0.0.0 Safari/537.36',
 };
 
-// 用登录态文件（storageState）无头抓取单平台
-async function scrapeWithStorage(storageFile, { url, rule, debugLabel, waitMs }) {
-  const browser = await chromium.launch(launchOptions({ headless: true }));
+// 用登录态文件（storageState）抓取单平台
+// headless 参数：某些网厅（如 189.cn）做站点级无头拦截，只能用有头窗口抓。
+async function scrapeWithStorage(storageFile, { url, rule, debugLabel, waitMs, headless = true }) {
+  const browser = await chromium.launch(launchOptions({ headless }));
   try {
     const context = await browser.newContext({ storageState: storageFile, ...HEADLESS_CONTEXT_OPTIONS });
     const page = await context.newPage();
@@ -517,14 +549,24 @@ export async function scrapeWalletBalance({ url, rule, debugLabel = '平台', he
   // allowCdpFallback=true：登录态文件抓取失败后，退回桌面 Chrome（真实浏览器指纹）。
   // 运营商网厅对无头浏览器反爬明显（实测电信 189.cn 无头下页面为空），需要这条退路。
   if (storageFile) {
+    // 站点级拦截无头浏览器的网厅（如实测 189.cn）：直接用有头窗口抓，
+    // 否则先无头失败再回退，会白等一轮超时。
+    const needHeaded = rule?.headlessBlocked === true;
     try {
-      return await scrapeWithStorage(storageFile, { url, rule, debugLabel, waitMs });
+      return await scrapeWithStorage(storageFile, { url, rule, debugLabel, waitMs, headless: needHeaded ? false : headless });
     } catch (err) {
       if (!allowCdpFallback) throw err;
       const cdpUp = await isDesktopChromeRunning();
-      if (!cdpUp) throw err;
-      console.warn(`[scrape] ${debugLabel} 无头抓取失败（${err.message}），改用桌面 Chrome 重试`);
-      return await scrapeViaDesktopChrome({ url, rule, debugLabel, waitMs });
+      if (cdpUp) {
+        console.warn(`[scrape] ${debugLabel} 抓取失败（${err.message}），改用桌面 Chrome 重试`);
+        return await scrapeViaDesktopChrome({ url, rule, debugLabel, waitMs });
+      }
+      // 桌面 Chrome 不可用时，再试一次有头窗口（部分站点只拦无头）
+      if (!needHeaded && headless) {
+        console.warn(`[scrape] ${debugLabel} 无头抓取失败（${err.message}），改用有头浏览器重试`);
+        return await scrapeWithStorage(storageFile, { url, rule, debugLabel, waitMs, headless: false });
+      }
+      throw err;
     }
   }
 
@@ -570,29 +612,37 @@ export async function scrapeWalletsBatch(tasks) {
   const results = [];
   const withStorage = tasks.filter((t) => t.storageFile);
   if (withStorage.length) {
-    const browser = await chromium.launch(launchOptions({ headless: true }));
-    try {
-      for (const t of withStorage) {
-        const context = await browser.newContext({ storageState: t.storageFile, viewport: { width: 1280, height: 900 } });
-        const page = await context.newPage();
-        try {
-          const balance = await scrapeOnePage(page, {
-            url: t.url,
-            rule: t.rule,
-            debugLabel: t.debugLabel,
-            waitMs: t.waitMs ?? 8000,
-            blockAssets: true,
-          });
-          results.push({ label: t.debugLabel, ok: true, balance });
-        } catch (e) {
-          results.push({ label: t.debugLabel, ok: false, error: e.message });
-        } finally {
-          try { await page.close(); } catch {}
-          try { await context.close(); } catch {}
+    // 按是否被站点拦截无头浏览器分组：被拦的用有头窗口，其余用无头
+    const groups = [
+      { headless: true, list: withStorage.filter((t) => t.rule?.headlessBlocked !== true) },
+      { headless: false, list: withStorage.filter((t) => t.rule?.headlessBlocked === true) },
+    ];
+    for (const g of groups) {
+      if (!g.list.length) continue;
+      const browser = await chromium.launch(launchOptions({ headless: g.headless }));
+      try {
+        for (const t of g.list) {
+          const context = await browser.newContext({ storageState: t.storageFile, viewport: { width: 1280, height: 900 } });
+          const page = await context.newPage();
+          try {
+            const balance = await scrapeOnePage(page, {
+              url: t.url,
+              rule: t.rule,
+              debugLabel: t.debugLabel,
+              waitMs: t.waitMs ?? 8000,
+              blockAssets: true,
+            });
+            results.push({ label: t.debugLabel, ok: true, balance });
+          } catch (e) {
+            results.push({ label: t.debugLabel, ok: false, error: e.message });
+          } finally {
+            try { await page.close(); } catch {}
+            try { await context.close(); } catch {}
+          }
         }
+      } finally {
+        await browser.close();
       }
-    } finally {
-      await browser.close();
     }
   }
   for (const t of tasks) {

@@ -128,6 +128,23 @@ check('标签与数字间夹中文不算已登录', detectCarrierLoggedIn('账�
 check('启动参数含关闭 AutomationControlled', BROWSER_ARGS.includes('--disable-blink-features=AutomationControlled'));
 check('启动参数仍保留 DeviceBoundSessions 禁用', BROWSER_ARGS.some(a => a.includes('DeviceBoundSessions')));
 
+// ===== 6. 电信网厅：反向布局 + 站点级无头拦截 =====
+// 实测（189.cn 登录后首页）：「数值在上、标签在下」，且金额被拆成 "54" + "\n" + ".61" 两段渲染。
+// 片段："…手机 宽带 固话 54\n.61\n元\n账户余额\n0\n.00\nKB\n已用专用流量…"
+const CT_LOGGED_IN = '公告： 关于规范互联网渠道售卡管理的公告 中国电信携号转网服务实施细则 ' +
+  '个人 政企 广东 服务大厅 查询服务 充值交费 亲友服务 号卡服务 宽带服务 客服咨询 业务办理 生活服务 ' +
+  '黄** 190****3361 普通用户 我的订单 修改密码 退出登录 手机 宽带 固话 ' +
+  '54\n.61\n元\n\n账户余额\n\n0\n.00\nKB\n\n已用专用流量\n\n0\n\n分钟\n\n已用通用语音\n\n0\n';
+check('电信反向布局：数值在标签前也能取到 54.61', extractBalance(CT_LOGGED_IN, ctRule) === 54.61);
+check('电信反向布局：拆分渲染的数字被接回（不是 54）', extractBalance(CT_LOGGED_IN, ctRule) !== 54);
+check('电信规则标记为数值在前', ctRule.valueBeforeLabel === true);
+check('电信规则标记为站点级拦无头', ctRule.headlessBlocked === true);
+check('移动规则未标记数值在前', cmccRule.valueBeforeLabel === false);
+check('移动规则未标记拦无头', cmccRule.headlessBlocked === false);
+
+// 拆分数字归一化单独验证
+check('拆分行的小数被接回', extractBalance('余额\n12\n.34\n元', { keyword: '余额' }) === 12.34);
+
 const fail = results.filter((r) => !r.pass);
 console.log(`\n结果：共 ${results.length} 项，通过 ${results.length - fail.length}，失败 ${fail.length}`);
 if (fail.length) {
