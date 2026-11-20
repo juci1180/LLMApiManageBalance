@@ -11,7 +11,8 @@ import path from 'node:path';
 import { dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import db, { initSchema } from '../src/db/index.js';
-import { parseScrapeRule, STORAGE_DIR, STORAGE_KEY_BY_NAME, BROWSER_ARGS, SAFE_KEYWORD_BY_KEY, detectCarrierLoggedIn, storageKeyFor, ruleKeyFor, CARRIER_ENTRY_URLS } from '../src/services/scraper_wallets.mjs';
+import { parseScrapeRule, STORAGE_DIR, STORAGE_KEY_BY_NAME, BROWSER_ARGS, SAFE_KEYWORD_BY_KEY, detectCarrierLoggedIn, storageKeyFor, ruleKeyFor, CARRIER_ENTRY_URLS, enrichRuleWithBuiltin, CARRIER_RULES, clickByText } from '../src/services/scraper_wallets.mjs';
+import { missingRequiredCookies } from '../src/services/session_status.mjs';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 
@@ -53,6 +54,48 @@ function targetsFromDb() {
 }
 
 const isLoginUrl = (u) => /login|passport|signin|cas\/|auth\/login/i.test(u || '');
+
+// 登录成功后「预热」登录态：把网厅的余额/用户中心模块真正加载一遍。
+// 为什么必须做（实测 2026-11-20）：
+//   网厅登录成功的那一刻，浏览器里并不一定已经有全部关键 cookie。
+//   189.cn 的网关会话 cookie（_secure_gateway_v2_token）与用户档案 cookie
+//   （_user_location_auth_v2_profile）是在用户中心/余额模块真正加载之后才下发的。
+//   若在登录判定刚成立时就保存登录态，存下的是一份残缺登录态：
+//   抓取时服务端不认这个会话，页面回到未登录态（余额显示为 --）。
+//   实测事故：2026-11-20 17:14 就是这么把一份完整登录态覆盖成了残缺态。
+// 返回 { ok, missing }：missing 非空表示关键 cookie 还没下发齐全。
+async function warmUpSession(page, context, { url, rule, requiredCookies, timeoutMs = 90000 }) {
+  const spec = Array.isArray(requiredCookies) ? requiredCookies : [];
+  const deadline = Date.now() + timeoutMs;
+  let missing = spec.map((r) => r.exact || r.prefix);
+
+  // 入口页 → 点菜单进余额/用户中心模块 → 网厅下发会话 cookie
+  const visit = async () => {
+    try {
+      await page.goto(url, { waitUntil: 'domcontentloaded', timeout: 45000 });
+    } catch { /* 跳转失败不致命，继续看 cookie */ }
+    await page.waitForTimeout(2500);
+    // 点菜单（电信首页的余额/用户中心入口），让相关模块真正加载
+    for (const entry of (rule?.entries || []).slice(0, 4)) {
+      if (!(await clickByText(page, entry, 5000))) continue;
+      await page.waitForTimeout(2500);
+      const cookies = await context.cookies().catch(() => []);
+      missing = missingRequiredCookies(cookies, spec);
+      if (!missing.length) return true;
+    }
+    return false;
+  };
+
+  while (Date.now() < deadline) {
+    await visit();
+    const cookies = await context.cookies().catch(() => []);
+    missing = missingRequiredCookies(cookies, spec);
+    if (!missing.length) return { ok: true, missing: [] };
+    // 还没齐：刷新入口页再来一轮（有时需要第二次访问网厅才补发会话 cookie）
+    await page.waitForTimeout(3000);
+  }
+  return { ok: false, missing };
+}
 
 // 等待页面满足：URL 不在登录页 + 页面文本包含余额关键字（连续两次确认）
 // 如果用户手动关闭了登录窗口，立即放弃当前平台（不再傻等超时）
@@ -137,6 +180,11 @@ async function waitLoggedIn(page, keyword, { timeoutMs = 10 * 60 * 1000, isCarri
       }
       const storageFile = path.join(STORAGE_DIR, `storage_${p.key}.json`);
       const rule = parseScrapeRule(p.rule);
+      const ruleKey = p.ruleKey || p.key;
+      const isCarrier = /^carrier_/.test(ruleKey);
+      // 运营商用内置规则（菜单入口、关键 cookie 声明），与抓取端一致
+      const fullRule = enrichRuleWithBuiltin(rule, p.name, ruleKey);
+      const requiredCookies = CARRIER_RULES[ruleKey]?.sessionRequiredCookies || null;
       // 登录检测用内置宽松关键字兜底：数据库规则可能被页面误写成带符号坏值（如"可用余额￥ "），
       // 内置宽松词（如"可用余额"）只要页面出现即判定已登录，避免干等超时
       const loginKeyword = SAFE_KEYWORD_BY_KEY[p.ruleKey || p.key] || rule.keyword;
@@ -151,10 +199,27 @@ async function waitLoggedIn(page, keyword, { timeoutMs = 10 * 60 * 1000, isCarri
         console.log(`  ✗ 浏览器已不可用（窗口被关闭），结束登录流程。`);
         break;
       }
-      const ok = await waitLoggedIn(page, loginKeyword, { isCarrier: /^carrier_/.test(p.ruleKey || p.key) });
+      const ok = await waitLoggedIn(page, loginKeyword, { isCarrier });
       if (ok) {
-        await context.storageState({ path: storageFile });
-        console.log(`  ✓ ${p.name} 登录成功，登录态已保存到 ${storageFile}`);
+        // 预热：把网厅的余额/用户中心模块真正加载一遍，等关键 cookie 下发齐全再保存。
+        // 否则存下的是残缺登录态（网关会话 cookie 缺失），抓取必然报未登录。
+        let warm = { ok: true, missing: [] };
+        if (isCarrier && requiredCookies && requiredCookies.length) {
+          console.log('  正在加载网厅余额模块，等待关键会话 cookie 下发...');
+          warm = await warmUpSession(page, context, { url: p.url, rule: fullRule, requiredCookies });
+          if (warm.ok) {
+            console.log('  ✓ 关键会话 cookie 已下发齐全');
+          } else {
+            console.log(`  ✗ 关键会话 cookie 仍缺失（${warm.missing.join(', ')}）`);
+          }
+        }
+        // 残缺登录态绝不覆盖已有的完整登录态
+        if (!warm.ok) {
+          console.log(`  ✗ ${p.name} 登录态不完整，未覆盖 ${storageFile}（避免把可用登录态写成残缺态）`);
+        } else {
+          await context.storageState({ path: storageFile });
+          console.log(`  ✓ ${p.name} 登录成功，登录态已保存到 ${storageFile}`);
+        }
       } else {
         console.log(`  ✗ ${p.name} 未完成登录（窗口关闭或超时），跳过。`);
       }

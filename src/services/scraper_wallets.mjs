@@ -10,6 +10,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import http from 'node:http';
 import { fileURLToPath } from 'node:url';
+import { findDegradedCookies } from './session_status.mjs';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
@@ -200,6 +201,15 @@ export const CARRIER_RULES = {
     // 关键会话 cookie：网厅每次访问下发的「同前缀成对票据」中较短的那枚（7 天窗口）。
     // 前缀是随机的（如 yiUIIlbdQT3f），不能硬编码全名——按「后缀 T + 存在同前缀 S 兄弟」识别。
     sessionCookie: { suffix: 'T', siblingSuffix: 'S' },
+    // 登录态必须包含的关键 cookie（实测 2026-11-20，见 §3.12）：
+    //   _secure_gateway_v2_token*    网关会话 cookie，缺了服务端不认这个会话（余额显示为 --）
+    //   _user_location_auth_v2_profile*  用户档案 cookie，缺了用户中心/余额模块不渲染
+    // 这两枚不是「登录判定用」，而是「登录判定刚成立时网厅还没下发」——
+    // 登录脚本若在这个时刻保存，存下来的是残缺登录态，抓取必然报未登录。
+    sessionRequiredCookies: [
+      { prefix: '_secure_gateway_v2_token' },
+      { prefix: '_user_location_auth_v2_profile' },
+    ],
   },
   carrier_cu: {
     balanceKeywords: ['可用余额', '账户当前可用余额', '账户余额', '当前余额'],
@@ -241,6 +251,8 @@ export function enrichRuleWithBuiltin(rule, name, provider) {
       sessionCheck: rule.sessionCheck ?? carrier.sessionCheck ?? null,
       // 关键会话 cookie 声明：决定「预计存活」倒计时取哪一枚 cookie
       sessionCookie: rule.sessionCookie ?? carrier.sessionCookie ?? null,
+      // 登录态必须包含的关键 cookie 声明：登录保存与写回都要校验它（见 persistStorageState）
+      sessionRequiredCookies: rule.sessionRequiredCookies ?? carrier.sessionRequiredCookies ?? null,
     };
   }
   if (key) {
@@ -513,7 +525,8 @@ function launchOptions(extra = {}) {
 
 // 按可见文字点击页面元素（网厅菜单入口），成功返回 true
 // 先按精确文字找（避免点到同义栏目），找不到再退回模糊匹配
-async function clickByText(page, text, timeoutMs = 6000) {
+// 登录脚本也要用它：登录成功后点进余额模块，网厅才会下发网关会话 cookie（见 wallet-login.mjs）
+export async function clickByText(page, text, timeoutMs = 6000) {
   for (const exact of [true, false]) {
     try {
       const loc = page.getByText(text, { exact }).first();
@@ -596,10 +609,31 @@ const HEADLESS_CONTEXT_OPTIONS = {
 // 如果抓完就把浏览器关掉、丢弃刷新后的 cookie，等于每次巡检都在用「登录那一刻」
 // 的过期时间重新算起，登录态必然在第一个滑动窗口（移动 30 分钟）内失效。
 // 写回后，登录态的有效期从「登录后固定 N 分钟」变成「只要定期访问就能一直续」。
-export async function persistStorageState(context, storageFile) {
+//
+// requiredCookies：登录态必须包含的关键 cookie 声明（见 CARRIER_RULES.*.sessionRequiredCookies）。
+// 写回前会做「退化检查」：新状态若丢了旧状态已有的关键 cookie，就拒绝写入。
+// 为什么：189.cn 的网关会话 cookie 只在会话有效时才下发，一旦服务端作废会话，
+// 抓到的 cookie 集就会少掉它。此时若无条件覆盖，等于用一份残缺登录态
+// 换掉原本完整的登录态——实测 2026-11-20 就这样把电信登录态写坏了。
+export async function persistStorageState(context, storageFile, { requiredCookies = null } = {}) {
   try {
     const state = await context.storageState();
     if (!state || !Array.isArray(state.cookies) || !state.cookies.length) return false;
+
+    // 退化检查：不让一次不完整的抓取把完整的登录态覆盖掉
+    if (Array.isArray(requiredCookies) && requiredCookies.length) {
+      let old = null;
+      try { old = JSON.parse(fs.readFileSync(storageFile, 'utf-8')); } catch { /* 没有旧文件 */ }
+      const degraded = findDegradedCookies(state.cookies, old && old.cookies, requiredCookies);
+      if (degraded.length) {
+        console.warn(
+          `[scrape] 登录态写回被拒绝（${storageFile}）：新状态缺少关键 cookie ${degraded.join(', ')}，` +
+          '保留原登录态不动（否则会把完整登录态覆盖成残缺态）'
+        );
+        return false;
+      }
+    }
+
     // 原子写：先写临时文件再 rename，避免中途崩溃留下半个损坏的登录态文件
     const tmp = `${storageFile}.tmp`;
     fs.writeFileSync(tmp, JSON.stringify(state, null, 2), 'utf-8');
@@ -623,7 +657,7 @@ async function scrapeWithStorage(storageFile, { url, rule, debugLabel, waitMs, h
     try {
       const balance = await scrapeOnePage(page, { url, rule, debugLabel, waitMs, blockAssets: true });
       // 写回服务端续期后的 cookie，保住滑动续期窗口（见 persistStorageState 注释）
-      await persistStorageState(context, storageFile);
+      await persistStorageState(context, storageFile, { requiredCookies: rule?.sessionRequiredCookies || null });
       return balance;
     } finally {
       try { await page.close(); } catch {}
@@ -758,7 +792,7 @@ export async function renewCarrierSession({ url, storageFile, rule, keywords, de
       if (!state.loggedIn) {
         return { ok: false, loggedIn: false, url: currentUrl, reason: state.reason };
       }
-      const persisted = await persistStorageState(context, storageFile);
+      const persisted = await persistStorageState(context, storageFile, { requiredCookies: rule?.sessionRequiredCookies || null });
       return { ok: persisted, loggedIn: true, url: currentUrl, textLength: text.length };
     } finally {
       try { await page.close(); } catch {}
@@ -797,7 +831,7 @@ export async function scrapeWalletsBatch(tasks) {
               blockAssets: true,
             });
             // 同样写回续期后的 cookie（批量路径与单平台路径行为一致）
-            await persistStorageState(context, t.storageFile);
+            await persistStorageState(context, t.storageFile, { requiredCookies: t.rule?.sessionRequiredCookies || null });
             results.push({ label: t.debugLabel, ok: true, balance });
           } catch (e) {
             results.push({ label: t.debugLabel, ok: false, error: e.message });

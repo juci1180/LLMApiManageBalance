@@ -2,7 +2,7 @@
 // 三大运营商个人卡余额：解析逻辑单元测试（不联网、不依赖真实网厅）
 // 覆盖：规则解析、内置规则套用、余额提取（多文案变体 / 负数 / 千分位 / 误命中防护）
 import { parseScrapeRule, enrichRuleWithBuiltin, extractBalance, CARRIER_RULES, CARRIER_ENTRY_URLS, SAFE_KEYWORD_BY_KEY, STORAGE_KEY_BY_NAME, detectCarrierLoggedIn, classifySessionState, BROWSER_ARGS, CARRIER_KEEPALIVE_MS, storageKeyFor, ruleKeyFor } from '../src/services/scraper_wallets.mjs';
-import { pickKeySessionCookie, buildSessionStatus } from '../src/services/session_status.mjs';
+import { pickKeySessionCookie, buildSessionStatus, missingRequiredCookies, findDegradedCookies } from '../src/services/session_status.mjs';
 
 const results = [];
 function check(name, pass, detail = '') {
@@ -292,6 +292,43 @@ check('观测到存活 → 仍按 cookie 过期时间算',
   buildSessionStatus({ cookies: CMCC_COOKIES, spec: cmccRule.sessionCookie, observedAlive: true, now: NOW }).state === 'ok');
 check('未观测过（null）→ 不覆盖 cookie 判定',
   buildSessionStatus({ cookies: CMCC_COOKIES, spec: cmccRule.sessionCookie, observedAlive: null, now: NOW }).state === 'ok');
+
+// ===== 5. 登录态完整性校验（残缺登录态保护）=====
+// 背景（实测 2026-11-20）：登录判定刚成立时，189.cn 还没下发网关会话 cookie
+// 与用户档案 cookie；此时保存会得到一份残缺登录态，抓取必然报未登录。
+const CT_REQUIRED = CARRIER_RULES.carrier_ct.sessionRequiredCookies;
+check('电信声明了必须存在的关键 cookie', Array.isArray(CT_REQUIRED) && CT_REQUIRED.length === 2);
+
+// 完整登录态（16:04 那份，含网关 token 与档案 cookie）
+const CT_FULL_COOKIES = [
+  { name: '_secure_gateway_v2_token_jxAeo079E' },
+  { name: '_user_location_auth_v2_profile' },
+  { name: 'yiUIIlbdQT3fT' },
+];
+// 残缺登录态（17:14 那份：登录判定刚成立就保存，网关 cookie 尚未下发）
+const CT_PARTIAL_COOKIES = [
+  { name: 'EcsLoginToken' },
+  { name: 'yiUIIlbdQT3fT' },
+  { name: 'yiUIIlbdQT3fS' },
+];
+
+check('完整登录态不缺关键 cookie', missingRequiredCookies(CT_FULL_COOKIES, CT_REQUIRED).length === 0);
+check('残缺登录态被识别出缺失网关 token',
+  missingRequiredCookies(CT_PARTIAL_COOKIES, CT_REQUIRED).includes('_secure_gateway_v2_token'));
+check('残缺登录态被识别出缺失档案 cookie',
+  missingRequiredCookies(CT_PARTIAL_COOKIES, CT_REQUIRED).includes('_user_location_auth_v2_profile'));
+check('无规则时不误报缺失', missingRequiredCookies(CT_PARTIAL_COOKIES, null).length === 0);
+check('空 cookie 列表全算缺失', missingRequiredCookies([], CT_REQUIRED).length === 2);
+
+// 退化检测：新状态比旧状态差 → 必须拦住这次写回
+check('完整→残缺 被判定为退化',
+  findDegradedCookies(CT_PARTIAL_COOKIES, CT_FULL_COOKIES, CT_REQUIRED).length === 2);
+check('完整→完整 不算退化',
+  findDegradedCookies(CT_FULL_COOKIES, CT_FULL_COOKIES, CT_REQUIRED).length === 0);
+check('旧状态本来就残缺 → 不算退化（首次登录场景）',
+  findDegradedCookies(CT_PARTIAL_COOKIES, CT_PARTIAL_COOKIES, CT_REQUIRED).length === 0);
+check('旧状态没有该文件 → 不算退化',
+  findDegradedCookies(CT_PARTIAL_COOKIES, null, CT_REQUIRED).length === 0);
 
 const fail = results.filter((r) => !r.pass);
 console.log(`\n结果：共 ${results.length} 项，通过 ${results.length - fail.length}，失败 ${fail.length}`);

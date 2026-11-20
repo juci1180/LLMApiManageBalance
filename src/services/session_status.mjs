@@ -32,6 +32,45 @@ export function pickKeySessionCookie(cookies, spec) {
   return candidates.reduce((a, b) => (b.expires < a.expires ? b : a));
 }
 
+// 检查登录态里缺哪些「必须存在」的 cookie。
+// spec 形如 [{ prefix: '_secure_gateway_v2_token' }, { exact: 'chargeresource' }]
+// 为什么需要它（实测 2026-11-20）：
+//   网厅登录成功的那一刻，浏览器里并不一定已经有全部关键 cookie。
+//   189.cn 的网关会话 cookie（_secure_gateway_v2_token）与用户档案 cookie
+//   （_user_location_auth_v2_profile）是在「用户中心/余额模块真正加载」之后才下发的。
+//   如果登录脚本在登录判定刚成立时就保存登录态，存下的是一份残缺登录态：
+//   抓取时服务端不认这个会话，页面回到未登录态（余额显示为 --）。
+export function missingRequiredCookies(cookies, spec) {
+  if (!Array.isArray(spec) || !spec.length) return [];
+  const names = (Array.isArray(cookies) ? cookies : [])
+    .map((c) => c && c.name)
+    .filter(Boolean);
+  const missing = [];
+  for (const r of spec) {
+    if (!r) continue;
+    const present = r.exact
+      ? names.includes(r.exact)
+      : r.prefix
+        ? names.some((n) => n.startsWith(r.prefix))
+        : true; // 规则写错时不当成缺失，避免误报
+    if (!present) missing.push(r.exact || r.prefix);
+  }
+  return missing;
+}
+
+// 找出「这次写回会让登录态退化」的关键 cookie。
+// 退化 = 旧登录态里有、新的没有。出现退化就不能覆盖写入：
+//   覆盖 = 用一份缺关键 cookie 的残缺登录态换掉原本完整的登录态，
+//   之后既抓不到余额，也回不去了。
+// 实测事故（2026-11-20）：登录脚本把完整登录态覆盖成了缺网关 cookie 的残缺态。
+export function findDegradedCookies(newCookies, oldCookies, spec) {
+  const oldMissing = missingRequiredCookies(oldCookies, spec);
+  // 旧登录态本来就没有这些 cookie → 不存在退化，照常写回
+  if (oldMissing.length) return [];
+  const newMissing = missingRequiredCookies(newCookies, spec);
+  return newMissing;
+}
+
 // 组装单个平台的会话状态。
 // 输入：
 //   cookies     登录态文件里的 cookie 数组（无文件时传 null）
