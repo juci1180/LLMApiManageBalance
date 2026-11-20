@@ -203,7 +203,10 @@ try {
   const cid = cc.json.id;
 
   const cLogin = await api('GET', `/api/platforms/${cid}/login-state`);
-  check('运营商平台登录态检测接口可用', cLogin.ok && cLogin.json?.exists === false && cLogin.json?.key === 'carrier_cmcc',
+  // 自定义名平台（如「移动副卡」）的登录态 key 必须带平台 id，
+  // 否则同运营商的第二个号码会与主号共用一个登录态文件、互相覆盖。
+  check('运营商平台登录态检测接口可用',
+    cLogin.ok && cLogin.json?.exists === false && cLogin.json?.key === `carrier_cmcc_${cid}`,
     `exists=${cLogin.json?.exists} key=${cLogin.json?.key}`);
 
   const cRefresh = await api('POST', `/api/platforms/${cid}/refresh`);

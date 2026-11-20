@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 // 三大运营商个人卡余额：解析逻辑单元测试（不联网、不依赖真实网厅）
 // 覆盖：规则解析、内置规则套用、余额提取（多文案变体 / 负数 / 千分位 / 误命中防护）
-import { parseScrapeRule, enrichRuleWithBuiltin, extractBalance, CARRIER_RULES, CARRIER_ENTRY_URLS, SAFE_KEYWORD_BY_KEY, STORAGE_KEY_BY_NAME, detectCarrierLoggedIn, classifySessionState, BROWSER_ARGS, CARRIER_KEEPALIVE_MS } from '../src/services/scraper_wallets.mjs';
+import { parseScrapeRule, enrichRuleWithBuiltin, extractBalance, CARRIER_RULES, CARRIER_ENTRY_URLS, SAFE_KEYWORD_BY_KEY, STORAGE_KEY_BY_NAME, detectCarrierLoggedIn, classifySessionState, BROWSER_ARGS, CARRIER_KEEPALIVE_MS, storageKeyFor, ruleKeyFor } from '../src/services/scraper_wallets.mjs';
 
 const results = [];
 function check(name, pass, detail = '') {
@@ -45,6 +45,21 @@ for (const key of ['carrier_cmcc', 'carrier_ct', 'carrier_cu']) {
 for (const key of ['carrier_cmcc', 'carrier_ct', 'carrier_cu']) {
   check(`${key} 有网厅入口`, typeof CARRIER_ENTRY_URLS[key] === 'string' && CARRIER_ENTRY_URLS[key].startsWith('http'));
 }
+
+// ===== 1b. 登录态文件按「账号」唯一（同运营商多号码不互相覆盖）=====
+// 规范名沿用固定 key（向后兼容既有登录态文件）
+check('规范名登录态 key 固定（移动）', storageKeyFor('中国移动话费', 'carrier_cmcc', 5) === 'carrier_cmcc');
+check('规范名登录态 key 固定（电信）', storageKeyFor('中国电信话费', 'carrier_ct', 6) === 'carrier_ct');
+// 同运营商的第二个号码必须拿到不同 key，否则会覆盖主号的登录态
+check('同运营商第二号码 key 不同（移动）',
+  storageKeyFor('移动副卡', 'carrier_cmcc', 7) !== storageKeyFor('移动副卡2', 'carrier_cmcc', 8));
+check('同运营商第二号码 key 不与主号相同（电信）',
+  storageKeyFor('电信副卡', 'carrier_ct', 9) !== storageKeyFor('中国电信话费', 'carrier_ct', 6));
+// 规则 key 按「网站」维度共享：同运营商所有号码共用一套网厅规则
+check('同运营商规则 key 共享（移动）',
+  ruleKeyFor('移动副卡', 'carrier_cmcc') === ruleKeyFor('中国移动话费', 'carrier_cmcc'));
+check('同运营商规则 key 共享（电信）',
+  ruleKeyFor('电信副卡', 'carrier_ct') === ruleKeyFor('中国电信话费', 'carrier_ct'));
 
 // 2026-11-20 实测：内置浏览器登录后 shop.10086.cn/i/?f=home 的正文（节选，含真实金额）
 const REAL_CMCC = '中午好， 178****6402 星级：无星级 当前套餐：全家享套餐（全国版）29档 ' +

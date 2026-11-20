@@ -11,7 +11,7 @@ import path from 'node:path';
 import { dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import db, { initSchema } from '../src/db/index.js';
-import { parseScrapeRule, STORAGE_DIR, STORAGE_KEY_BY_NAME, BROWSER_ARGS, SAFE_KEYWORD_BY_KEY, detectCarrierLoggedIn } from '../src/services/scraper_wallets.mjs';
+import { parseScrapeRule, STORAGE_DIR, STORAGE_KEY_BY_NAME, BROWSER_ARGS, SAFE_KEYWORD_BY_KEY, detectCarrierLoggedIn, storageKeyFor, ruleKeyFor, CARRIER_ENTRY_URLS } from '../src/services/scraper_wallets.mjs';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 
@@ -33,16 +33,23 @@ const PRESET_PLATFORMS = [
 // 三大运营商个人卡走 provider=carrier_* 且 balance_type=api，同样需要网厅登录态，一并纳入
 function targetsFromDb() {
   const rows = db.prepare(
-    "SELECT name, provider, balance_api_url, balance_json_path FROM platforms WHERE (balance_type='scrape' OR provider LIKE 'carrier_%') AND active = 1"
+    "SELECT id, name, provider, balance_api_url, balance_json_path FROM platforms WHERE (balance_type='scrape' OR provider LIKE 'carrier_%') AND active = 1"
   ).all();
   return rows
-    .filter((r) => r.balance_api_url)
+    .filter((r) => r.balance_api_url || CARRIER_ENTRY_URLS[r.provider])
     .map((r) => ({
-      key: STORAGE_KEY_BY_NAME[r.name] || r.provider || r.name,
+      // 登录态文件 key 按「账号」唯一：同运营商的多个号码各存各的文件（带平台 id）
+      key: storageKeyFor(r.name, r.provider, r.id),
+      // 规则/关键字按「网站」维度取：同运营商的所有号码共用一套网厅规则
+      ruleKey: ruleKeyFor(r.name, r.provider),
+      id: r.id,
       name: r.name,
-      url: r.balance_api_url,
+      // 运营商平台可以没填 balance_api_url（如「移动副卡」这类自定义名平台），
+      // 用内置网厅入口兜底，否则它不会出现在登录目标里
+      url: r.balance_api_url || CARRIER_ENTRY_URLS[r.provider] || null,
       rule: r.balance_json_path || '',
-    }));
+    }))
+    .filter((r) => r.url);
 }
 
 const isLoginUrl = (u) => /login|passport|signin|cas\/|auth\/login/i.test(u || '');
@@ -100,7 +107,9 @@ async function waitLoggedIn(page, keyword, { timeoutMs = 10 * 60 * 1000, isCarri
   // 需要登录的目标：数据库里的浏览器抓取型平台优先；空库时用预设兜底
   const dbTargets = targetsFromDb();
   const allTargets = dbTargets.length ? dbTargets : PRESET_PLATFORMS;
-  const targets = onlyKey ? allTargets.filter((p) => p.key === onlyKey) : allTargets;
+  const targets = onlyKey
+    ? allTargets.filter((p) => p.key === onlyKey || p.name === onlyKey || String(p.id) === onlyKey)
+    : allTargets;
   if (onlyKey && targets.length === 0) {
     console.log(`未找到平台: ${onlyKey}。可用: ${allTargets.map((p) => p.key).join(', ')}`);
     process.exit(1);
@@ -130,7 +139,7 @@ async function waitLoggedIn(page, keyword, { timeoutMs = 10 * 60 * 1000, isCarri
       const rule = parseScrapeRule(p.rule);
       // 登录检测用内置宽松关键字兜底：数据库规则可能被页面误写成带符号坏值（如"可用余额￥ "），
       // 内置宽松词（如"可用余额"）只要页面出现即判定已登录，避免干等超时
-      const loginKeyword = SAFE_KEYWORD_BY_KEY[p.key] || rule.keyword;
+      const loginKeyword = SAFE_KEYWORD_BY_KEY[p.ruleKey || p.key] || rule.keyword;
       console.log(`[${p.name}] 打开 ${p.url}`);
       console.log('  请在浏览器窗口里登录（关闭窗口 = 放弃当前平台）。');
       let context, page;
@@ -142,7 +151,7 @@ async function waitLoggedIn(page, keyword, { timeoutMs = 10 * 60 * 1000, isCarri
         console.log(`  ✗ 浏览器已不可用（窗口被关闭），结束登录流程。`);
         break;
       }
-      const ok = await waitLoggedIn(page, loginKeyword, { isCarrier: /^carrier_/.test(p.key) });
+      const ok = await waitLoggedIn(page, loginKeyword, { isCarrier: /^carrier_/.test(p.ruleKey || p.key) });
       if (ok) {
         await context.storageState({ path: storageFile });
         console.log(`  ✓ ${p.name} 登录成功，登录态已保存到 ${storageFile}`);

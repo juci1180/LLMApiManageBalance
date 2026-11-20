@@ -209,7 +209,8 @@ export const CARRIER_RULES = {
 // 给规则补上内置安全关键字与精确正则（内置优先，防止数据库规则被写成坏值），返回新规则对象
 export function enrichRuleWithBuiltin(rule, name, provider) {
   if (!rule) return rule;
-  const key = STORAGE_KEY_BY_NAME[name] || provider;
+  // 规则按「网站」维度取（同一运营商的多个号码共享同一套网厅规则）
+  const key = ruleKeyFor(name, provider);
   // 运营商：套用内置的标签组、精确正则与网厅菜单入口
   const carrier = CARRIER_RULES[key];
   if (carrier) {
@@ -373,8 +374,10 @@ async function waitForKeyword(page, keyword, { waitKeywordMs = 30000 } = {}) {
 export const STORAGE_DIR = process.env.LLM_MANAGER_WALLET_STATE_DIR
   || path.join(__dirname, '..', 'wallet-states');
 
-// 平台名 → 登录态文件 key 的映射（与 wallet-login.mjs / setup-wallet-platforms.mjs 一致）
+// 平台名 → 规则 key 的映射（与 wallet-login.mjs / setup-wallet-platforms.mjs 一致）
 // 兼容新简称（腾讯云/MIMO/Kimi/阿里云）与旧全称
+// 注意：这张表映射的是「网站/运营商」维度的知识（网厅页面结构），不是登录态文件——
+// 登录态文件按「账号」维度唯一，见 storageKeyFor。
 export const STORAGE_KEY_BY_NAME = {
   '腾讯云TokenHub': 'tencent',
   '腾讯云': 'tencent',
@@ -392,10 +395,32 @@ export const STORAGE_KEY_BY_NAME = {
   '中国联通话费': 'carrier_cu',
 };
 
+// 平台 → 规则 key（按「网站/运营商」维度，不是按账号）
+// 用于 CARRIER_RULES / SAFE_KEYWORD_BY_KEY / PRECISE_REGEX_BY_KEY——
+// 这些是「网厅页面结构」的知识，同运营商的所有号码完全一致，可以共享。
+export function ruleKeyFor(name, provider = null) {
+  return STORAGE_KEY_BY_NAME[name] || provider || name;
+}
+
+// 平台 → 登录态文件 key（按「账号」维度，必须唯一）
+// 背景：同一运营商可能登录多个号码（主卡 + 副卡 / 家庭共享号）。运营商服务端按账号
+// 独立维护会话，不同号码的 cookie 互不影响、互不顶号；但我们本地的登录态文件如果只按
+// 运营商命名，第二个号码登录时就会覆盖第一个的登录态文件——两个平台于是共用一份 cookie，
+// 抓到的余额可能是另一个号码的。
+// 因此：只有「内置规范名」沿用固定 key（向后兼容既有登录态文件）；
+// 其余平台（自定义名，如「移动副卡」）按 provider + 平台 id 派生唯一 key。
+export function storageKeyFor(name, provider = null, id = null) {
+  const canonical = STORAGE_KEY_BY_NAME[name];
+  if (canonical) return canonical;
+  if (id !== null && id !== undefined && provider) return `${provider}_${id}`;
+  return provider || name;
+}
+
 // 按平台名找登录态文件；找不到返回 null
-// fallbackKey：非预设平台（新添加的 scrape 平台）用 provider 字段兜底匹配
-export function storageFileFor(name, fallbackKey = null) {
-  const key = STORAGE_KEY_BY_NAME[name] || fallbackKey;
+// fallbackKey：非预设平台（新添加的平台）用 provider 字段兜底匹配
+// id：平台 id，用于把同运营商的多个账号拆成不同登录态文件
+export function storageFileFor(name, fallbackKey = null, id = null) {
+  const key = storageKeyFor(name, fallbackKey, id);
   if (!key) return null;
   const f = path.join(STORAGE_DIR, `storage_${key}.json`);
   return fs.existsSync(f) ? f : null;

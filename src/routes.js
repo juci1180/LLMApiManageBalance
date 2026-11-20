@@ -10,7 +10,7 @@ import { spawn } from 'node:child_process';
 import fs from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { dirname, join } from 'node:path';
-import { STORAGE_KEY_BY_NAME, storageFileFor } from './services/scraper_wallets.mjs';
+import { storageKeyFor, storageFileFor } from './services/scraper_wallets.mjs';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const PROJECT_ROOT = join(__dirname, '..');
@@ -31,8 +31,9 @@ function validateNumericFields(b) {
 }
 
 // 平台 → 登录态文件 key（与 wallet-login.mjs 的转换一致）
-function storageKeyFor(platform) {
-  return STORAGE_KEY_BY_NAME[platform.name] || platform.provider || platform.name;
+// 登录态文件按「账号」唯一：同运营商的多个号码各存各的文件（带平台 id）
+function storageKeyForPlatform(platform) {
+  return storageKeyFor(platform.name, platform.provider, platform.id);
 }
 
 export async function registerRoutes(fastify) {
@@ -51,7 +52,7 @@ export async function registerRoutes(fastify) {
       platform = row || null;
     }
     const args = ['scripts/wallet-login.mjs'];
-    if (platform) args.push(storageKeyFor(platform));
+    if (platform) args.push(storageKeyForPlatform(platform));
     loginRunning = true;
     try {
       // 脚本输出记录到日志文件，前端可查询登录结果
@@ -87,7 +88,7 @@ export async function registerRoutes(fastify) {
   fastify.get('/api/platforms/:id/login-state', async (req) => {
     const p = db.prepare('SELECT * FROM platforms WHERE id = ?').get(req.params.id);
     if (!p) return { exists: false, key: null };
-    return { exists: Boolean(storageFileFor(p.name, p.provider)), key: storageKeyFor(p) };
+    return { exists: Boolean(storageFileFor(p.name, p.provider, p.id)), key: storageKeyForPlatform(p) };
   });
 
   // ===== 平台面板 =====

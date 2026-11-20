@@ -4,7 +4,7 @@
 import db from '../db/index.js';
 import { createHash, createHmac } from 'node:crypto';
 import { scrapeMiniMaxBalance } from './scraper_minimax.mjs';
-import { scrapeWalletBalance, parseScrapeRule, storageFileFor, enrichRuleWithBuiltin, CARRIER_ENTRY_URLS } from './scraper_wallets.mjs';
+import { scrapeWalletBalance, parseScrapeRule, storageFileFor, storageKeyFor, enrichRuleWithBuiltin, CARRIER_ENTRY_URLS } from './scraper_wallets.mjs';
 
 // 火山引擎 OpenAPI 签名（HMAC-SHA256，类似 AWS SigV4）
 function sha256hex(s) { return createHash('sha256').update(s).digest('hex'); }
@@ -86,9 +86,10 @@ async function scrapeCarrier(platform, providerKey) {
     throw new Error('运营商平台未配置网厅地址（balance_api_url）');
   }
   const rule = enrichRuleWithBuiltin(parseScrapeRule(platform.balance_json_path), platform.name, providerKey);
-  const storageFile = storageFileFor(platform.name, providerKey);
+  // 登录态文件按「账号」唯一：同运营商的多个号码各用各的文件（传入 platform.id）
+  const storageFile = storageFileFor(platform.name, providerKey, platform.id);
   if (!storageFile) {
-    throw new Error(`尚未登录 ${platform.name}：请先运行 node scripts/wallet-login.mjs ${providerKey} 完成一次网厅登录`);
+    throw new Error(`尚未登录 ${platform.name}：请先运行 node scripts/wallet-login.mjs ${storageKeyFor(platform.name, providerKey, platform.id)} 完成一次网厅登录`);
   }
   const balance = await scrapeWalletBalance({
     url,
@@ -380,7 +381,7 @@ const providers = {
       url: platform.balance_api_url,
       rule,
       debugLabel: platform.name,
-      storageFile: storageFileFor(platform.name, platform.provider),
+      storageFile: storageFileFor(platform.name, platform.provider, platform.id),
     });
     return { balance, raw: {}, unit: platform.currency || '元', scraped: true };
   },

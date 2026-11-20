@@ -5,7 +5,7 @@ import initSqlJs from 'sql.js';
 import { readFileSync } from 'node:fs';
 import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { scrapeWalletsBatch, parseScrapeRule, storageFileFor, enrichRuleWithBuiltin } from '../src/services/scraper_wallets.mjs';
+import { scrapeWalletsBatch, parseScrapeRule, storageFileFor, enrichRuleWithBuiltin, CARRIER_ENTRY_URLS } from '../src/services/scraper_wallets.mjs';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const dbFile = join(__dirname, '..', 'src', 'data', 'llm-manager.db');
@@ -16,7 +16,7 @@ const SQL = await initSqlJs();
 const db = new SQL.Database(readFileSync(dbFile));
 
 const res = db.exec(
-  "SELECT name, provider, balance_api_url, balance_json_path FROM platforms " +
+  "SELECT id, name, provider, balance_api_url, balance_json_path FROM platforms " +
   "WHERE (balance_type='scrape' OR provider LIKE 'carrier_%') AND active=1"
 );
 if (!res.length) {
@@ -26,15 +26,18 @@ if (!res.length) {
 
 let tasks = res[0].values
   .map((r) => {
-    const [name, provider, url, jsonPath] = r;
-    if (!url) return null;
+    const [id, name, provider, url, jsonPath] = r;
+    // 运营商平台可以没填 balance_api_url（如「移动副卡」这类自定义名平台），用内置网厅入口兜底
+    const entryUrl = url || CARRIER_ENTRY_URLS[provider];
+    if (!entryUrl) return null;
     // 运营商平台用内置规则（候选标签组 + 网厅菜单入口），与运行时一致
     const rule = enrichRuleWithBuiltin(parseScrapeRule(jsonPath), name, provider);
     return {
-      url,
+      url: entryUrl,
       rule,
       debugLabel: name,
-      storageFile: storageFileFor(name, provider),
+      // 登录态文件按「账号」唯一：同运营商的多个号码各用各的文件（传入平台 id）
+      storageFile: storageFileFor(name, provider, id),
     };
   })
   .filter(Boolean);
