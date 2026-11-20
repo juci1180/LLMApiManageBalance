@@ -6,7 +6,7 @@ import { fileURLToPath } from 'node:url';
 import { readFileSync } from 'node:fs';
 import { initSchema } from './db/index.js';
 import { registerRoutes } from './routes.js';
-import { startMonitor } from './services/monitor.js';
+import { startMonitor, startCarrierKeepAlive } from './services/monitor.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
@@ -31,6 +31,9 @@ await registerRoutes(app);
 
 // 启动定时监控（启动即跑一次巡检）
 startMonitor();
+
+// 启动运营商登录态保活（滑动续期会话需要定期访问才能续命，见 monitor.js 注释）
+startCarrierKeepAlive();
 
 // 启动服务
 const port = Number(process.env.LLM_MANAGER_PORT) || config.port || 3000;

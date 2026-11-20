@@ -3,6 +3,7 @@ import db from '../db/index.js';
 import { refreshPlatformBalance } from './balance.js';
 import { maybeCreateRechargeOrder, notifyOrder, tryCreditOrder } from './recharge.js';
 import { sendPhoneNotify } from './push.js';
+import { CARRIER_KEEPALIVE_MS, CARRIER_RULES, CARRIER_ENTRY_URLS, renewCarrierSession, storageFileFor } from './scraper_wallets.mjs';
 import { readFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -113,4 +114,67 @@ export function startMonitor() {
   run(); // 启动即跑一次
   const timer = setInterval(run, intervalMs);
   return timer;
+}
+
+// 运营商登录态保活（滑动续期会话专用）
+//
+// 背景（实测 2026-11-20）：运营商网厅的会话是「滑动续期」的——每次访问，服务端把关键
+// cookie 的过期时间推到「访问时刻 + 窗口」。移动 chargeresource 的窗口只有 30 分钟，
+// 而巡检周期是 1 小时，光靠定时巡检保不住会话：窗口一过，浏览器下次就不再带上该
+// cookie，服务端认不出会话 → 跳登录页。
+//
+// 措施：给运营商单独加一条更快的保活节奏（CARRIER_KEEPALIVE_MS），且抓取成功后
+// 把服务端续期后的 cookie 写回登录态文件（persistStorageState）。
+// 保活只做「访问 + 续期」，不写余额历史、不触发充值单——避免高频巡检污染数据。
+let keepAliveTimer = null;
+
+export function startCarrierKeepAlive() {
+  const tick = async () => {
+    const rows = db.prepare(
+      "SELECT * FROM platforms WHERE active = 1 AND provider LIKE 'carrier_%'"
+    ).all();
+    for (const p of rows) {
+      const interval = CARRIER_KEEPALIVE_MS[p.provider];
+      if (!interval) continue;
+      const storageFile = storageFileFor(p.name, p.provider);
+      if (!storageFile) continue; // 未登录，等巡检报错提示用户登录
+      const lastKey = `keepalive_at_${p.id}`;
+      const last = Number(db.prepare('SELECT value FROM settings WHERE key = ?').get(lastKey)?.value || 0);
+      if (Date.now() - last < interval) continue;
+      db.prepare('INSERT OR REPLACE INTO settings (key, value) VALUES (?, ?)').run(lastKey, String(Date.now()));
+      try {
+        // 只访问 + 写回续期后的 cookie，不提取余额、不写历史、不触发充值单
+        const url = p.balance_api_url || CARRIER_ENTRY_URLS[p.provider];
+        const rule = CARRIER_RULES[p.provider] || {};
+        const r = await renewCarrierSession({ url, storageFile, rule, debugLabel: p.name });
+        if (r.ok) {
+          console.log(`[keepalive] ${p.name} 会话续期成功`);
+        } else if (r.loggedIn === false) {
+          console.warn(`[keepalive] ${p.name} 会话已失效（跳转 ${r.url}），需重新运行 node scripts/wallet-login.mjs ${p.provider}`);
+          // 主动推送：保活比巡检更早发现会话失效（巡检要等 1 小时），
+          // 同一平台 6 小时内只推一次，避免反复打扰
+          const pushKey = `keepalive_push_${p.id}`;
+          const lastPush = Number(db.prepare('SELECT value FROM settings WHERE key = ?').get(pushKey)?.value || 0);
+          if (Date.now() - lastPush >= 6 * 3600 * 1000) {
+            db.prepare('INSERT OR REPLACE INTO settings (key, value) VALUES (?, ?)').run(pushKey, String(Date.now()));
+            await sendPhoneNotify(
+              `⚠️ ${p.name} 登录态已失效`,
+              `保活检测到网厅会话已失效（跳转 ${r.url}）。\n请重新登录：node scripts/wallet-login.mjs ${p.provider}`
+            );
+            console.log(`[keepalive] 已推送登录态失效提醒: ${p.name}`);
+          }
+        } else {
+          console.warn(`[keepalive] ${p.name} 会话续期失败`);
+        }
+      } catch (err) {
+        console.warn(`[keepalive] ${p.name} 保活异常: ${err.message}`);
+      }
+    }
+  };
+  // 启动后先等一轮，避免与服务启动即跑的巡检并发抢浏览器
+  setTimeout(() => {
+    tick();
+    keepAliveTimer = setInterval(tick, 60 * 1000); // 每分钟检查一次，到期才访问
+  }, 60 * 1000);
+  return keepAliveTimer;
 }

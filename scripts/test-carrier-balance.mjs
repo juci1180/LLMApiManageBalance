@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 // 三大运营商个人卡余额：解析逻辑单元测试（不联网、不依赖真实网厅）
 // 覆盖：规则解析、内置规则套用、余额提取（多文案变体 / 负数 / 千分位 / 误命中防护）
-import { parseScrapeRule, enrichRuleWithBuiltin, extractBalance, CARRIER_RULES, CARRIER_ENTRY_URLS, SAFE_KEYWORD_BY_KEY, STORAGE_KEY_BY_NAME, detectCarrierLoggedIn, BROWSER_ARGS } from '../src/services/scraper_wallets.mjs';
+import { parseScrapeRule, enrichRuleWithBuiltin, extractBalance, CARRIER_RULES, CARRIER_ENTRY_URLS, SAFE_KEYWORD_BY_KEY, STORAGE_KEY_BY_NAME, detectCarrierLoggedIn, BROWSER_ARGS, CARRIER_KEEPALIVE_MS } from '../src/services/scraper_wallets.mjs';
 
 const results = [];
 function check(name, pass, detail = '') {
@@ -144,6 +144,17 @@ check('移动规则未标记拦无头', cmccRule.headlessBlocked === false);
 
 // 拆分数字归一化单独验证
 check('拆分行的小数被接回', extractBalance('余额\n12\n.34\n元', { keyword: '余额' }) === 12.34);
+
+// ===== 7. 登录态保活：滑动续期窗口与保活间隔 =====
+// 实测（2026-11-20）：运营商网厅会话是滑动续期的——每次访问，服务端把关键 cookie
+// 的过期时间推到「访问时刻 + 窗口」。
+//   移动 chargeresource：窗口 30 分钟（实测 15:29 → 15:36）
+//   电信 yiUIIlbdQT3fT ：窗口 7 天；yiUIIlbdQT3fS：窗口 1 年
+// 保活间隔必须小于窗口，否则窗口一过，浏览器下次就不再带上该 cookie → 跳登录页。
+check('三家运营商都定义了保活间隔', ['carrier_cmcc', 'carrier_ct', 'carrier_cu'].every(k => typeof CARRIER_KEEPALIVE_MS[k] === 'number'));
+check('移动保活间隔 < 30 分钟窗口', CARRIER_KEEPALIVE_MS.carrier_cmcc < 30 * 60 * 1000);
+check('电信保活间隔 < 7 天窗口', CARRIER_KEEPALIVE_MS.carrier_ct < 7 * 24 * 3600 * 1000);
+check('保活间隔不短于 1 分钟（避免过于频繁）', Object.values(CARRIER_KEEPALIVE_MS).every(v => v >= 60 * 1000));
 
 const fail = results.filter((r) => !r.pass);
 console.log(`\n结果：共 ${results.length} 项，通过 ${results.length - fail.length}，失败 ${fail.length}`);

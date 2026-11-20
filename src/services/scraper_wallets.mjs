@@ -139,6 +139,25 @@ export const CARRIER_ENTRY_URLS = {
 //  - regex：精确提取余额（单位元，负数表示欠费）
 //  - entries：网厅首页的菜单入口文字，抓取时依次点击进入余额子页
 //  - exclude：标签里带这些词的金额不采信（防止误取"账户总余额"这类旁支数字）
+// 运营商会话的「滑动续期窗口」与保活节奏（实测 2026-11-20）
+//
+// 实测的 cookie 过期时间（登录后 / 访问后）：
+//   移动 chargeresource：登录后 30 分钟过期，每次访问续期到「访问时刻 + 30 分钟」
+//   电信 yiUIIlbdQT3fT  ：续期到「访问时刻 + 7 天」
+//   电信 yiUIIlbdQT3fS  ：续期到「访问时刻 + 1 年」
+//
+// 关键：滑动续期必须「在窗口内再访问一次」，否则窗口一到，浏览器下次就不再带上
+// 该 cookie，服务端认不出会话 → 跳登录页。所以保活间隔必须小于窗口，
+// 且访问后要把续期后的 cookie 写回文件（见 persistStorageState）。
+//
+// keepAliveMs：保活访问间隔，取窗口的一半留出余量。
+// 电信的窗口以天计，但 189.cn 只能有头窗口抓（会弹窗），因此间隔不宜太短。
+export const CARRIER_KEEPALIVE_MS = {
+  carrier_cmcc: 10 * 60 * 1000,   // 窗口 30 分钟 → 每 10 分钟访问一次
+  carrier_ct: 60 * 60 * 1000,    // 窗口 7 天 → 每小时一次（且需有头弹窗）
+  carrier_cu: 30 * 60 * 1000,    // 联通未联调，先按 30 分钟保守取值
+};
+
 export const CARRIER_RULES = {
   carrier_cmcc: {
     balanceKeywords: ['可用余额', '账户可用余额', '账户余额', '当前余额'],
@@ -506,6 +525,31 @@ const HEADLESS_CONTEXT_OPTIONS = {
     'Chrome/131.0.0.0 Safari/537.36',
 };
 
+// 把浏览器上下文当前的 cookie 写回登录态文件。
+// 为什么必须写回（实测 2026-11-20）：
+// 网厅会话是「滑动续期」的——每次访问，服务端都会把关键 cookie 的过期时间往后推。
+//   移动：chargeresource 每次访问续期到「访问时刻 + 30 分钟」（实测 15:29 → 15:36）
+//   电信：yiUIIlbdQT3fS 续期到「访问时刻 + 1 年」，yiUIIlbdQT3fT 续期到「+7 天」
+// 如果抓完就把浏览器关掉、丢弃刷新后的 cookie，等于每次巡检都在用「登录那一刻」
+// 的过期时间重新算起，登录态必然在第一个滑动窗口（移动 30 分钟）内失效。
+// 写回后，登录态的有效期从「登录后固定 N 分钟」变成「只要定期访问就能一直续」。
+export async function persistStorageState(context, storageFile) {
+  try {
+    const state = await context.storageState();
+    if (!state || !Array.isArray(state.cookies) || !state.cookies.length) return false;
+    // 原子写：先写临时文件再 rename，避免中途崩溃留下半个损坏的登录态文件
+    const tmp = `${storageFile}.tmp`;
+    fs.writeFileSync(tmp, JSON.stringify(state, null, 2), 'utf-8');
+    // 留一份备份：写回的是服务端刚续期的 cookie，万一站点行为异常还能退回旧文件
+    try { fs.copyFileSync(storageFile, `${storageFile}.bak`); } catch { /* 首次写入无旧文件 */ }
+    fs.renameSync(tmp, storageFile);
+    return true;
+  } catch (e) {
+    console.warn(`[scrape] 登录态写回失败（${storageFile}）: ${e.message}`);
+    return false;
+  }
+}
+
 // 用登录态文件（storageState）抓取单平台
 // headless 参数：某些网厅（如 189.cn）做站点级无头拦截，只能用有头窗口抓。
 async function scrapeWithStorage(storageFile, { url, rule, debugLabel, waitMs, headless = true }) {
@@ -514,7 +558,10 @@ async function scrapeWithStorage(storageFile, { url, rule, debugLabel, waitMs, h
     const context = await browser.newContext({ storageState: storageFile, ...HEADLESS_CONTEXT_OPTIONS });
     const page = await context.newPage();
     try {
-      return await scrapeOnePage(page, { url, rule, debugLabel, waitMs, blockAssets: true });
+      const balance = await scrapeOnePage(page, { url, rule, debugLabel, waitMs, blockAssets: true });
+      // 写回服务端续期后的 cookie，保住滑动续期窗口（见 persistStorageState 注释）
+      await persistStorageState(context, storageFile);
+      return balance;
     } finally {
       try { await page.close(); } catch {}
       await context.close();
@@ -605,6 +652,38 @@ export async function scrapeWalletBalance({ url, rule, debugLabel = '平台', he
   }
 }
 
+// 运营商会话续期（保活）：只访问网厅首页触发服务端滑动续期，并把续期后的 cookie 写回。
+// 与抓取余额的区别：
+//   - 不提取余额、不写 balance_history、不触发充值单（保活每 10 分钟跑一次，
+//     若走余额刷新会污染历史数据并让阈值判断频繁触发）；
+//   - 只访问入口页，不点菜单进余额子页——续期只需要「带着会话访问一次」。
+// 返回 { ok, loggedIn }：loggedIn=false 表示会话已失效（需要用户重新登录）。
+export async function renewCarrierSession({ url, storageFile, rule, debugLabel = '运营商' }) {
+  const headless = rule?.headlessBlocked !== true;
+  const browser = await chromium.launch(launchOptions({ headless }));
+  try {
+    const context = await browser.newContext({ storageState: storageFile, ...HEADLESS_CONTEXT_OPTIONS });
+    const page = await context.newPage();
+    try {
+      await page.goto(url, { waitUntil: 'domcontentloaded', timeout: 45000 }).catch(() => {});
+      await page.waitForTimeout(6000);
+      const text = await page.evaluate(() => (document.body ? document.body.innerText : '')).catch(() => '');
+      const currentUrl = page.url();
+      // 跳到登录页 = 会话已失效；此时写回只会把过期状态存回去，不写
+      if (/login|passport|signin/i.test(currentUrl)) {
+        return { ok: false, loggedIn: false, url: currentUrl };
+      }
+      const persisted = await persistStorageState(context, storageFile);
+      return { ok: persisted, loggedIn: true, url: currentUrl, textLength: text.length };
+    } finally {
+      try { await page.close(); } catch {}
+      try { await context.close(); } catch {}
+    }
+  } finally {
+    await browser.close();
+  }
+}
+
 // 批量抓取（供验证脚本与巡检使用）：
 // 每个平台加载各自的登录态文件（task.storageFile），无头顺序抓取；
 // 没有登录态文件的平台直接标记「无登录态文件」。
@@ -632,6 +711,8 @@ export async function scrapeWalletsBatch(tasks) {
               waitMs: t.waitMs ?? 8000,
               blockAssets: true,
             });
+            // 同样写回续期后的 cookie（批量路径与单平台路径行为一致）
+            await persistStorageState(context, t.storageFile);
             results.push({ label: t.debugLabel, ok: true, balance });
           } catch (e) {
             results.push({ label: t.debugLabel, ok: false, error: e.message });
