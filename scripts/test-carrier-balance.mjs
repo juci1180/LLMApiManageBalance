@@ -3,6 +3,10 @@
 // 覆盖：规则解析、内置规则套用、余额提取（多文案变体 / 负数 / 千分位 / 误命中防护）
 import { parseScrapeRule, enrichRuleWithBuiltin, extractBalance, CARRIER_RULES, CARRIER_ENTRY_URLS, SAFE_KEYWORD_BY_KEY, STORAGE_KEY_BY_NAME, detectCarrierLoggedIn, classifySessionState, BROWSER_ARGS, CARRIER_KEEPALIVE_MS, storageKeyFor, ruleKeyFor } from '../src/services/scraper_wallets.mjs';
 import { pickKeySessionCookie, buildSessionStatus, missingRequiredCookies, findDegradedCookies } from '../src/services/session_status.mjs';
+import { readSessionMeta, writeSessionMeta, markSessionLoggedIn, markSessionDead, parseMaskedAccount } from '../src/services/session_meta.mjs';
+import fs from 'node:fs';
+import os from 'node:os';
+import path from 'node:path';
 
 const results = [];
 function check(name, pass, detail = '') {
@@ -179,8 +183,17 @@ check('移动规则标记了会话失效标记 ssoFail', Array.isArray(cmccRule.
 // 电信：会话作废后 URL 仍是 /web/，首页带余额与「退出登录」，可用正文判定
 check('电信规则标记为正文判定会话', ctRule.sessionCheck === 'text');
 check('移动规则未标记正文判定会话', cmccRule.sessionCheck !== 'text');
-// 电信只能有头窗口抓（会弹窗），保活频率必须放宽，否则每小时多弹一次窗
-check('电信保活间隔不短于 1 小时（避免每小时额外弹窗）', CARRIER_KEEPALIVE_MS.carrier_ct >= 60 * 60 * 1000);
+// 电信只能有头窗口抓（会弹窗），保活频率要权衡弹窗与掉线。
+// 旧断言「不短于 1 小时」的前提是「电信会话窗口有 7 天」——那是从 cookie 票据寿命
+// （yiUIIlbdQT3fT 写 7 天）推出的假值。实测（2026-11-20 晚）会话窗口只有约 60 分钟：
+// 18:53 抓到余额 → 19:54 已失效（距上次成功访问 61 分钟）。
+// 保活间隔必须小于窗口，否则 100% 掉线；现在的 25 分钟留了 2 倍余量。
+check('电信保活间隔 < 会话窗口（实测窗口约 60 分钟）',
+  CARRIER_KEEPALIVE_MS.carrier_ct < CARRIER_RULES.carrier_ct.sessionMaxAgeMs);
+check('电信保活间隔不短于 10 分钟（避免过于频繁地弹窗）',
+  CARRIER_KEEPALIVE_MS.carrier_ct >= 10 * 60 * 1000);
+check('电信保活间隔留有 2 倍以上余量',
+  CARRIER_KEEPALIVE_MS.carrier_ct * 2 <= CARRIER_RULES.carrier_ct.sessionMaxAgeMs);
 
 // ===== 9. 会话有效性判定（classifySessionState）=====
 // 实测：移动与电信会话失效后 URL 都不变（移动停在首页、电信停在 /web/），
@@ -329,6 +342,105 @@ check('旧状态本来就残缺 → 不算退化（首次登录场景）',
   findDegradedCookies(CT_PARTIAL_COOKIES, CT_PARTIAL_COOKIES, CT_REQUIRED).length === 0);
 check('旧状态没有该文件 → 不算退化',
   findDegradedCookies(CT_PARTIAL_COOKIES, null, CT_REQUIRED).length === 0);
+
+// ===== 6. 会话寿命与「续命」机制（实测 2026-11-20 晚）=====
+// 实测结论（两家的机制不同，是本次掉线的根因）：
+//   移动：会话是「登录后固定 ~60 分钟」的服务端硬上限。访问只把 chargeresource 的
+//         *过期时间*推后（值不变），服务端不换发会话 → 保活续不回来。
+//   电信：每次访问服务端会换发票据（值变）→ 访问能续命，窗口约 60 分钟。
+//   所以「预计存活」必须按会话寿命算，而不是按 cookie 票据寿命算
+//   （电信票据写着 7 天，实际 1 小时就死——那是假值）。
+check('移动规则标定了会话寿命', typeof CARRIER_RULES.carrier_cmcc.sessionMaxAgeMs === 'number');
+check('电信规则标定了会话寿命', typeof CARRIER_RULES.carrier_ct.sessionMaxAgeMs === 'number');
+check('移动标记为「访问续不了命」', CARRIER_RULES.carrier_cmcc.sessionRenewable === false);
+check('电信标记为「访问能续命」', CARRIER_RULES.carrier_ct.sessionRenewable === true);
+check('移动会话寿命约 50~60 分钟',
+  CARRIER_RULES.carrier_cmcc.sessionMaxAgeMs >= 40 * 60 * 1000 &&
+  CARRIER_RULES.carrier_cmcc.sessionMaxAgeMs <= 70 * 60 * 1000);
+check('电信会话寿命约 60 分钟',
+  CARRIER_RULES.carrier_ct.sessionMaxAgeMs >= 50 * 60 * 1000 &&
+  CARRIER_RULES.carrier_ct.sessionMaxAgeMs <= 90 * 60 * 1000);
+// 电信保活间隔必须小于会话窗口，否则必然掉线（原先设成 12 小时 = 100% 掉线）
+check('电信保活间隔 < 会话窗口',
+  CARRIER_KEEPALIVE_MS.carrier_ct < CARRIER_RULES.carrier_ct.sessionMaxAgeMs);
+check('移动保活间隔仍远小于 1 小时（用于尽早发现失效）',
+  CARRIER_KEEPALIVE_MS.carrier_cmcc <= 15 * 60 * 1000);
+
+// 「预计存活」取会话寿命与票据寿命里更短的那个
+const CMCC_MAX = CARRIER_RULES.carrier_cmcc.sessionMaxAgeMs;
+const CT_MAX = CARRIER_RULES.carrier_ct.sessionMaxAgeMs;
+{
+  // 移动：登录 40 分钟前，cookie 票据还有 30 天，但会话只剩 20 分钟
+  const st = buildSessionStatus({
+    cookies: CMCC_COOKIES, spec: cmccRule.sessionCookie, now: NOW,
+    sessionStartedAt: NOW - 40 * 60 * 1000,
+    lastRenewedAt: NOW - 2 * 60 * 1000,
+    maxAgeMs: CMCC_MAX, renewable: false,
+  });
+  check('移动：预计存活按会话寿命算（不是票据寿命）',
+    st.ttlMs <= CMCC_MAX && st.ttlMs > 0, `ttl=${Math.round((st.ttlMs || 0) / 60000)} 分钟`);
+  check('移动：即使刚访问过也不刷新窗口（访问续不了命）',
+    st.ttlMs <= (CMCC_MAX - 40 * 60 * 1000) + 1000);
+}
+{
+  // 电信：上次成功访问 10 分钟前 → 窗口从上次访问起算，还剩 ~50 分钟
+  const st = buildSessionStatus({
+    cookies: CT_COOKIES, spec: ctRule.sessionCookie, now: NOW,
+    sessionStartedAt: NOW - 3 * 3600 * 1000,
+    lastRenewedAt: NOW - 10 * 60 * 1000,
+    maxAgeMs: CT_MAX, renewable: true,
+  });
+  check('电信：窗口从上次成功访问起算',
+    st.ttlMs <= (CT_MAX - 10 * 60 * 1000) + 1000 && st.ttlMs > 0,
+    `ttl=${Math.round((st.ttlMs || 0) / 60000)} 分钟`);
+}
+{
+  // 即将失效：剩余不足 15 分钟 → expiring（提前预警）
+  const st = buildSessionStatus({
+    cookies: CMCC_COOKIES, spec: cmccRule.sessionCookie, now: NOW,
+    sessionStartedAt: NOW - (CMCC_MAX - 5 * 60 * 1000),
+    maxAgeMs: CMCC_MAX, renewable: false,
+  });
+  check('移动：剩余不足 15 分钟 → state=expiring', st.state === 'expiring');
+  check('移动：expiring 时仍给出剩余时间', st.ttlMs !== null && st.ttlMs > 0);
+}
+{
+  // 已确认掉线仍然优先（地面真相）
+  const st = buildSessionStatus({
+    cookies: CT_COOKIES, spec: ctRule.sessionCookie, now: NOW, observedAlive: false,
+    sessionStartedAt: NOW - 10 * 60 * 1000, maxAgeMs: CT_MAX, renewable: true,
+  });
+  check('观测到掉线仍优先于寿命估算', st.state === 'not_logged_in' && st.ttlMs === null);
+}
+check('会话状态里带上 renewable（供前端区分「续命」是否真的有用）',
+  buildSessionStatus({ cookies: CMCC_COOKIES, spec: cmccRule.sessionCookie, now: NOW }).renewable === false);
+check('可续命的运营商 renewable=true',
+  buildSessionStatus({ cookies: CT_COOKIES, spec: ctRule.sessionCookie, now: NOW, renewable: true }).renewable === true);
+
+// ===== 7. 会话元信息（登录时刻 / 上次有效访问 / 绑定号码）=====
+{
+  const tmp = path.join(os.tmpdir(), `sessmeta-${process.pid}.json`);
+  const f = `${tmp}`;
+  try { fs.unlinkSync(f); } catch {}
+  check('元信息文件初始不存在 → 读出 null', readSessionMeta(f) === null);
+  markSessionLoggedIn(f, '178****6402');
+  const m1 = readSessionMeta(f);
+  check('登录后记录了登录时刻', typeof m1.loggedInAt === 'number' && m1.loggedInAt > 0);
+  check('登录后记录了绑定号码', m1.account === '178****6402');
+  const before = m1.lastAliveAt;
+  // 模拟过了一段时间后的有效访问
+  writeSessionMeta(f, { lastAliveAt: before + 60000 });
+  const m2 = readSessionMeta(f);
+  check('有效访问更新了 lastAliveAt', m2.lastAliveAt === before + 60000);
+  check('有效访问不会清掉登录时刻', m2.loggedInAt === m1.loggedInAt);
+  markSessionDead(f);
+  const m3 = readSessionMeta(f);
+  check('会话失效后清掉 lastAliveAt', m3.lastAliveAt === null);
+  check('会话失效后保留登录时刻（供追溯）', m3.loggedInAt === m1.loggedInAt);
+  try { fs.unlinkSync(f); } catch {}
+}
+check('能从页面正文解析脱敏号码', parseMaskedAccount('欢迎回来 178****6402 当前套餐') === '178****6402');
+check('正文里没有号码时返回 null', parseMaskedAccount('普通页面文本') === null);
 
 const fail = results.filter((r) => !r.pass);
 console.log(`\n结果：共 ${results.length} 项，通过 ${results.length - fail.length}，失败 ${fail.length}`);

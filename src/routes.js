@@ -12,6 +12,7 @@ import { fileURLToPath } from 'node:url';
 import { dirname, join } from 'node:path';
 import { storageKeyFor, storageFileFor, CARRIER_RULES, CARRIER_KEEPALIVE_MS, ruleKeyFor } from './services/scraper_wallets.mjs';
 import { buildSessionStatus } from './services/session_status.mjs';
+import { readSessionMeta } from './services/session_meta.mjs';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const PROJECT_ROOT = join(__dirname, '..');
@@ -125,10 +126,16 @@ export async function registerRoutes(fastify) {
         const row = db.prepare('SELECT value FROM settings WHERE key = ?').get(key);
         return Number(row?.value || 0);
       };
+      // 会话元信息（登录时刻 / 上次有效访问时刻）——sidecar 文件，与登录脚本共享
+      const meta = file ? readSessionMeta(file) : null;
       const status = buildSessionStatus({
         cookies,
         spec: rule.sessionCookie ?? null,
         observedAlive: num(`session_alive_${p.id}`) === 0 ? false : (num(`session_alive_${p.id}`) > 0 ? true : null),
+        sessionStartedAt: meta?.loggedInAt || null,
+        lastRenewedAt: meta?.lastAliveAt || null,
+        maxAgeMs: rule.sessionMaxAgeMs ?? null,
+        renewable: rule.sessionRenewable ?? null,
         timing: {
           keepAliveIntervalMs: CARRIER_KEEPALIVE_MS[p.provider] || 0,
           monitorIntervalMs: monitorIntervalMs(),
@@ -147,6 +154,8 @@ export async function registerRoutes(fastify) {
         platform_id: p.id,
         name: p.name,
         provider: p.provider,
+        // 绑定号码：登录时网厅认定的号码（副卡被登成主卡号时能看出来）
+        account: meta?.account || null,
         ...status,
       });
     }

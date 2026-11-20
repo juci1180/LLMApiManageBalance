@@ -11,6 +11,7 @@ import path from 'node:path';
 import http from 'node:http';
 import { fileURLToPath } from 'node:url';
 import { findDegradedCookies } from './session_status.mjs';
+import { markSessionAlive, markSessionDead } from './session_meta.mjs';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
@@ -162,8 +163,21 @@ export const CARRIER_ENTRY_URLS = {
 //  - 移动：窗口 30 分钟，保活 10 分钟一次，实测会话仍在登录后约 30 分钟失效
 //    （保活续不了硬上限），但保活能第一时间发现失效标记并提醒用户重新登录，故保留。
 export const CARRIER_KEEPALIVE_MS = {
-  carrier_cmcc: 10 * 60 * 1000,   // 窗口 30 分钟 → 每 10 分钟访问一次
-  carrier_ct: 12 * 60 * 60 * 1000, // 窗口 7 天，巡检已每小时续期 → 每 12 小时兜底一次
+  // 移动：会话是「登录后固定 ~60 分钟」的服务端硬上限（实测 2026-11-20 晚）：
+  //   17:57 登录 → 18:47 访问仍活 → 18:52 巡检已死（约 55 分钟后）；
+  //   21:02 登录 → 21:55 访问仍活 → 22:04 已死（约 62 分钟后）。
+  //   期间每次访问 chargeresource 的**值不变**（对比 .bak 确认），只有过期时间被推到
+  //   「访问时刻+30 分钟」——服务端并未换发会话。
+  //   所以保活**延长不了**移动的会话，它只能做到「尽早发现失效」。
+  //   间隔取 10 分钟：失效后 10 分钟内就能发现并提醒，不让用户面对一个静默的死会话。
+  carrier_cmcc: 10 * 60 * 1000,
+  // 电信：每次访问服务端会**换发票据**（yiUIIlbdQT3fT 值变，.bak 对比确认），
+  //   即访问确实能续命；窗口约 60 分钟（实测 18:53 抓到余额 → 19:54 已死）。
+  //   所以保活间隔必须**小于**窗口，否则必然掉线。
+  //   原先设成 12 小时（为减少弹窗），等于 100% 掉线——这是本次掉线的直接原因之一。
+  //   改为 25 分钟：窗口 60 分钟内留 2 倍余量。
+  //   代价：189.cn 拦无头（实测带登录态无头访问正文 0 字），保活需要有头窗口，会弹窗。
+  carrier_ct: 25 * 60 * 1000,
   carrier_cu: 30 * 60 * 1000,    // 联通未联调，先按 30 分钟保守取值
 };
 
@@ -180,6 +194,17 @@ export const CARRIER_RULES = {
     sessionFailMarkers: ['ssoFail'],
     // 关键会话 cookie：决定登录态还能活多久的那一枚（实测 30 分钟滑动窗口）
     sessionCookie: { exact: 'chargeresource' },
+    // 实测会话最长存活时长（毫秒）——「预计存活」倒计时用它，而不是 cookie 过期时间。
+    // 实测（2026-11-20 晚）：21:02 登录 → 21:55 仍存活 → 22:04 已失效。
+    // 期间 cookie 过期时间一直被推到「访问时刻+30 分钟」，所以只看 cookie 会以为会话还活着（假值）。
+    sessionMaxAgeMs: 50 * 60 * 1000,
+    // 访问能否真的「续命」：移动不行。
+    // 实测（2026-11-20 晚，对比 .bak 与当前文件）：每次访问后 chargeresource 的
+    // **值不变**、只有过期时间被推后——服务端没有换发新会话，
+    // 所以定期访问只能让 cookie 看起来还新鲜，救不回服务端会话。
+    // 实测 21:02 登录后保活每 10 分钟续一次，21:55 仍活、22:04 照死不误。
+    // 结论：移动的会话寿命从「登录时刻」起算，访问不延长它。
+    sessionRenewable: false,
   },
   carrier_ct: {
     balanceKeywords: ['可用余额', '本月可用余额', '账户余额', '当前余额'],
@@ -210,6 +235,14 @@ export const CARRIER_RULES = {
       { prefix: '_secure_gateway_v2_token' },
       { prefix: '_user_location_auth_v2_profile' },
     ],
+    // 实测会话最长存活时长（毫秒）——「预计存活」倒计时用它。
+    // 实测（2026-11-20 晚）：17:53 登录 → 18:53 仍能抓到余额 → 19:54 页面已无登录标识。
+    // 期间 yiUIIlbdQT3fT 的**值被换发**（对比 .bak：18:53 那次值变了）——服务端确实续了会话。
+    sessionMaxAgeMs: 60 * 60 * 1000,
+    // 访问能否真的「续命」：电信可以。
+    // 实测：每次访问后 yiUIIlbdQT3fT 票据被换发成新值（= 新会话），
+    // 因此只要在窗口内访问就能一直续下去；19:54 失效正是因为整整 60 分钟没有访问。
+    sessionRenewable: true,
   },
   carrier_cu: {
     balanceKeywords: ['可用余额', '账户当前可用余额', '账户余额', '当前余额'],
@@ -253,6 +286,10 @@ export function enrichRuleWithBuiltin(rule, name, provider) {
       sessionCookie: rule.sessionCookie ?? carrier.sessionCookie ?? null,
       // 登录态必须包含的关键 cookie 声明：登录保存与写回都要校验它（见 persistStorageState）
       sessionRequiredCookies: rule.sessionRequiredCookies ?? carrier.sessionRequiredCookies ?? null,
+      // 会话最长存活时长（实测标定）：用于「预计存活」倒计时，避免拿 cookie 票据寿命当会话寿命
+      sessionMaxAgeMs: rule.sessionMaxAgeMs ?? carrier.sessionMaxAgeMs ?? null,
+      // 访问是否真能续命：false = 寿命从登录时刻起算，访问只是让 cookie 看起来新鲜
+      sessionRenewable: rule.sessionRenewable ?? carrier.sessionRenewable ?? null,
     };
   }
   if (key) {
@@ -658,6 +695,8 @@ async function scrapeWithStorage(storageFile, { url, rule, debugLabel, waitMs, h
       const balance = await scrapeOnePage(page, { url, rule, debugLabel, waitMs, blockAssets: true });
       // 写回服务端续期后的 cookie，保住滑动续期窗口（见 persistStorageState 注释）
       await persistStorageState(context, storageFile, { requiredCookies: rule?.sessionRequiredCookies || null });
+      // 抓取成功 = 会话有效 = 一次有效的续命机会（记录给倒计时用）
+      markSessionAlive(storageFile);
       return balance;
     } finally {
       try { await page.close(); } catch {}
@@ -783,6 +822,15 @@ export async function renewCarrierSession({ url, storageFile, rule, keywords, de
     try {
       await page.goto(url, { waitUntil: 'domcontentloaded', timeout: 45000 }).catch(() => {});
       await page.waitForTimeout(6000);
+      // 「可续命」的运营商（如电信）：只访问入口页未必能触发票据换发。
+      // 实测能续命的是**完整抓取**那条路径（进余额模块），保活必须走同一条路，
+      // 否则「保活成功」只是假象——入口页照常渲染，票据却没换。
+      if (rule?.sessionRenewable === true && Array.isArray(rule.entries) && rule.entries.length) {
+        for (const entry of rule.entries.slice(0, 4)) {
+          if (!(await clickByText(page, entry, 5000))) continue;
+          await page.waitForTimeout(2500);
+        }
+      }
       const text = await page.evaluate(() => (document.body ? document.body.innerText : '')).catch(() => '');
       const currentUrl = page.url();
       // 会话是否还有效：跳登录页 / 服务端失效标记 / 正文已无登录标识
@@ -790,9 +838,16 @@ export async function renewCarrierSession({ url, storageFile, rule, keywords, de
       const cookies = await context.cookies().catch(() => []);
       const state = classifySessionState({ url: currentUrl, text, cookies, rule, keywords });
       if (!state.loggedIn) {
+        // 会话已失效：清掉「上次有效访问时刻」，倒计时不再给乐观估计
+        markSessionDead(storageFile);
         return { ok: false, loggedIn: false, url: currentUrl, reason: state.reason };
       }
       const persisted = await persistStorageState(context, storageFile, { requiredCookies: rule?.sessionRequiredCookies || null });
+      // 访问成功且会话有效 = 一次有效的「续命机会」。
+      // 实测：移动的窗口从「登录时刻」起算（访问不重置它），
+      // 电信的窗口从「上次成功访问」起算（访问确实换发了票据）——
+      // 两家都记录下来，倒计时才知道该从哪算。
+      markSessionAlive(storageFile);
       return { ok: persisted, loggedIn: true, url: currentUrl, textLength: text.length };
     } finally {
       try { await page.close(); } catch {}

@@ -76,13 +76,39 @@ export function findDegradedCookies(newCookies, oldCookies, spec) {
 //   cookies     登录态文件里的 cookie 数组（无文件时传 null）
 //   spec        CARRIER_RULES[provider].sessionCookie
 //   timing      { keepAliveIntervalMs, monitorIntervalMs, lastKeepAliveAt, lastMonitorAt }
+//   sessionStartedAt  最近一次「成功登录」的时刻（毫秒）
+//   lastRenewedAt    最近一次「访问网厅且会话仍有效」的时刻（毫秒）
+//   maxAgeMs    该运营商实测的会话窗口长度（毫秒）；null 表示尚未标定
+//   renewable   访问网厅能否真的给会话续命（true/false/null=未知）
 // 输出 state：
 //   'not_logged_in' 没有登录态文件
 //   'key_unknown'  有登录态文件但认不出关键 cookie（需要重新登录确认）
 //   'uncalibrated' 该运营商尚未标定关键 cookie（如联通未联调）
-//   'expired'      关键 cookie 已过期
+//   'expired'      预计存活已到零
+//   'expiring'     预计存活不足 warnMs（即将失效，需尽快重新登录）
 //   'ok'           有效
-export function buildSessionStatus({ cookies, spec, timing = {}, observedAlive = null, now = Date.now() }) {
+//
+// 「预计存活」的两种口径（实测 2026-11-20 晚，机制两家不同）：
+//   移动：会话是「登录后固定 ~60 分钟」的硬上限。访问网厅只会把 chargeresource 的
+//         *过期时间*推到「访问时刻+30 分钟」（值不变），服务端并未换发会话，
+//         所以访问不延长会话——保活再勤也救不回来。必须靠重新扫码登录。
+//   电信：每次访问，服务端会把票据 yiUIIlbdQT3fT *换发成新值*（= 新会话），
+//         所以只要在窗口内访问就能一直续下去。
+// 因此：
+//   renewable=true  → 窗口从「上次成功访问」起算
+//   renewable=false → 窗口从「登录时刻」起算（访问不重置它）
+export function buildSessionStatus({
+  cookies,
+  spec,
+  timing = {},
+  observedAlive = null,
+  sessionStartedAt = null,
+  lastRenewedAt = null,
+  maxAgeMs = null,
+  renewable = null,
+  warnMs = 15 * 60 * 1000,
+  now = Date.now(),
+}) {
   const base = {
     state: 'not_logged_in',
     keyCookie: null,
@@ -90,6 +116,9 @@ export function buildSessionStatus({ cookies, spec, timing = {}, observedAlive =
     ttlMs: null,
     nextRenewAt: null,
     renewSource: null,
+    sessionStartedAt: sessionStartedAt || null,
+    lastRenewedAt: lastRenewedAt || null,
+    renewable: renewable === true,
   };
   if (!spec) return { ...base, state: 'uncalibrated' };
   if (!Array.isArray(cookies) || !cookies.length) return base;
@@ -97,8 +126,31 @@ export function buildSessionStatus({ cookies, spec, timing = {}, observedAlive =
   const key = pickKeySessionCookie(cookies, spec);
   if (!key) return { ...base, state: 'key_unknown' };
 
-  const expiresAt = key.expires * 1000;
-  const ttlMs = expiresAt - now;
+  const cookieExpiresAt = key.expires * 1000;
+  let expiresAt = cookieExpiresAt;
+  let ttlMs = cookieExpiresAt - now;
+
+  // 「预计存活」不能只看 cookie 过期时间——实测（2026-11-20）这是假值：
+  //   电信的 yiUIIlbdQT3fT 票据写着 7 天，但会话窗口只有约 60 分钟；
+  //   移动 chargeresource 每次访问被推到「访问时刻+30 分钟」，
+  //   保活看着一直在续，会话仍然照死不误。
+  // 所以取两个口径里更短的那个：
+  //   ① cookie 过期时间（票据寿命）
+  //   ② 会话窗口（见上方两种起算口径）
+  // maxAgeMs 尚未标定（如联通未联调）时，退回只用 cookie 口径。
+  if (maxAgeMs) {
+    // 起算点：能续命的从上次成功访问算；不能续命的从登录时刻算。
+    const anchor = renewable === false
+      ? (sessionStartedAt || lastRenewedAt)
+      : (lastRenewedAt || sessionStartedAt);
+    if (anchor) {
+      const sessionExpiresAt = anchor + maxAgeMs;
+      if (sessionExpiresAt < expiresAt) {
+        expiresAt = sessionExpiresAt;
+        ttlMs = sessionExpiresAt - now;
+      }
+    }
+  }
 
   // 下一次访问网厅的时刻 = 保活与余额巡检中较早的那个
   const kaInterval = timing.keepAliveIntervalMs || 0;
@@ -129,8 +181,20 @@ export function buildSessionStatus({ cookies, spec, timing = {}, observedAlive =
       ttlMs: null,
       nextRenewAt: renewAt,
       renewSource,
+      sessionStartedAt: sessionStartedAt || null,
+      lastRenewedAt: lastRenewedAt || null,
+      renewable: renewable === true,
     };
   }
+
+  // 预计存活已归零，但上次实际访问仍判定会话有效：
+  // 说明实测窗口估短了或服务端临时宽限。此时应预警「该重登了」而不是谎报过期。
+  if (ttlMs <= 0 && state === 'expired' && observedAlive === true) state = 'expiring';
+  // 剩余时间不足 warnMs：提前预警。
+  // 重点场景（实测 2026-11-20）：移动的会话是「登录后固定 ~60 分钟」的硬上限，
+  // 保活续不了它。所以必须在这段窗口内提醒用户重新扫码登录，
+  // 否则用户只能在界面上看到「未登录」，根本不知道它是什么时候没的。
+  else if (ttlMs > 0 && ttlMs <= warnMs) state = 'expiring';
 
   return {
     state,
@@ -139,5 +203,8 @@ export function buildSessionStatus({ cookies, spec, timing = {}, observedAlive =
     ttlMs,
     nextRenewAt: renewAt,
     renewSource,
+    sessionStartedAt: sessionStartedAt || null,
+    lastRenewedAt: lastRenewedAt || null,
+    renewable: renewable === true,
   };
 }

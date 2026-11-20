@@ -52,6 +52,7 @@
     .sess-line b { color:#334155; font-weight:600; font-variant-numeric:tabular-nums; }
     .sess-bad { color:var(--red); font-weight:600; }
     .sess-dim { color:#94a3b8; }
+    .sess-warn { color:var(--orange,#ea580c); font-weight:600; }
     /* 操作反馈：右上角 toast */
     .toast-wrap { position:fixed; top:16px; right:16px; z-index:999; display:flex; flex-direction:column; gap:8px; pointer-events:none; }
     .toast { pointer-events:auto; max-width:380px; padding:10px 14px; border-radius:8px; font-size:13px; line-height:1.6; box-shadow:0 4px 14px rgba(0,0,0,.14); background:#fff; border:1px solid var(--border); animation:toastIn .18s ease-out; word-break:break-word; }
@@ -439,6 +440,13 @@
           box.innerHTML = '<div class="sess-line sess-bad">已过期，需重新登录</div>';
           return;
         }
+        if (s.state === 'expiring') {
+          // 即将失效：提醒用户尽快重新登录（移动这类会话保活续不回来）
+          box.innerHTML =
+            '<div class="sess-line sess-warn">即将失效，请重新登录</div>' +
+            `<div class="sess-line sess-dim">预计存活 <b>${fmtCountdown(s.expiresAt ? s.expiresAt - now : null)}</b></div>`;
+          return;
+        }
         if (s.state === 'uncalibrated') {
           box.innerHTML = '<div class="sess-line sess-dim">存活时间未标定</div>';
           return;
@@ -450,9 +458,17 @@
         const ttl = s.expiresAt ? s.expiresAt - now : null;
         const renew = s.nextRenewAt ? s.nextRenewAt - now : null;
         const tip = s.keyCookie ? `关键会话 cookie：${s.keyCookie}` : '';
+        // 「续命」对不同运营商含义不同：
+        //   电信：访问确实能换发票据、延长会话 → 续命是真能续上。
+        //   移动：访问只把 cookie 过期时间推后，服务端会话有「登录后固定时长」硬上限 → 续不了。
+        // 所以文案要说准，否则用户会以为续命倒计时到了就一定还活着。
+        const renewTip = s.renewable === false
+          ? '该网厅的会话是「登录后固定时长」限制，访问续不回来；到期需重新登录'
+          : (s.renewSource === 'keepalive' ? '保活访问网厅续期' : '余额巡检访问网厅续期');
+        const acct = s.account ? `　绑定号码 ${s.account}` : '';
         box.innerHTML =
-          `<div class="sess-line" title="${esc(tip)}">预计存活 <b>${fmtCountdown(ttl)}</b></div>` +
-          `<div class="sess-line" title="${esc(s.renewSource === 'keepalive' ? '保活访问网厅续期' : '余额巡检访问网厅续期')}">续命 <b>${fmtCountdown(renew)}</b></div>`;
+          `<div class="sess-line" title="${esc(tip)}">预计存活 <b>${fmtCountdown(ttl)}</b>${esc(acct)}</div>` +
+          `<div class="sess-line" title="${esc(renewTip)}">续命 <b>${fmtCountdown(renew)}</b></div>`;
       });
     }
 

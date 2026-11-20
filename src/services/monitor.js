@@ -3,7 +3,8 @@ import db from '../db/index.js';
 import { refreshPlatformBalance } from './balance.js';
 import { maybeCreateRechargeOrder, notifyOrder, tryCreditOrder } from './recharge.js';
 import { sendPhoneNotify } from './push.js';
-import { CARRIER_KEEPALIVE_MS, CARRIER_RULES, CARRIER_ENTRY_URLS, SAFE_KEYWORD_BY_KEY, renewCarrierSession, storageFileFor, storageKeyFor } from './scraper_wallets.mjs';
+import { CARRIER_KEEPALIVE_MS, CARRIER_RULES, CARRIER_ENTRY_URLS, SAFE_KEYWORD_BY_KEY, renewCarrierSession, storageFileFor, storageKeyFor, enrichRuleWithBuiltin, parseScrapeRule } from './scraper_wallets.mjs';
+import { readSessionMeta } from './session_meta.mjs';
 import { readFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -138,6 +139,37 @@ export function startMonitor() {
 // 保活只做「访问 + 续期」，不写余额历史、不触发充值单——避免高频巡检污染数据。
 let keepAliveTimer = null;
 
+// 会话即将失效时的提前提醒。
+// 为什么必须有这个（实测 2026-11-20 晚）：
+//   移动的会话是「登录后 ~60 分钟」的硬上限，保活救不回来，
+//   一旦过了这个点就只能重新扫码登录。如果等到「已经变成未登录」才提醒，
+//   用户是事后才知道的（这正是本次问题的由来）。
+//   所以在窗口耗尽前 20 分钟就提醒，让用户有时间扫码。
+// 频率控制：同一个登录周期只提醒一次（用登录时刻做键）。
+async function notifySessionExpiring(platform, meta, leftMs, storageKey) {
+  const pushKey = `session_expiring_push_${platform.id}`;
+  // 用登录时刻做键：同一次登录只提醒一次，重新登录后自动可以再提醒
+  const token = `${platform.id}:${meta.loggedInAt}`;
+  if (getSetting(pushKey) === token) return;
+  const minutes = Math.max(1, Math.round(leftMs / 60000));
+  const body =
+    `${platform.name} 的登录态将在约 ${minutes} 分钟后失效。\n` +
+    `该网厅的会话是「登录后固定时长」的限制，定期访问续不回来。\n` +
+    `请重新登录：node scripts/wallet-login.mjs ${storageKey}` +
+    (meta.account ? `\n当前绑定号码：${meta.account}` : '');
+  const res = await sendPhoneNotify(`⏰ ${platform.name} 登录态即将失效`, body);
+  setSetting(pushKey, token);
+  if (res.delivered) {
+    console.log(`[keepalive] 已推送即将失效提醒: ${platform.name}（约 ${minutes} 分钟后）`);
+  } else {
+    console.warn(
+      `[keepalive] ${platform.name} 登录态将在约 ${minutes} 分钟后失效，` +
+      '但**推送未送达**（config.json 的 notify.serverchan / notify.bark 都没配置）。' +
+      '请在界面上看到提醒后及时重新登录。'
+    );
+  }
+}
+
 export function startCarrierKeepAlive() {
   const tick = async () => {
     const rows = db.prepare(
@@ -167,6 +199,20 @@ export function startCarrierKeepAlive() {
         if (r.ok) {
           console.log(`[keepalive] ${p.name} 会话续期成功`);
           setSetting(`session_alive_${p.id}`, 1);
+          // 「可续命」与「不可续命」的差别很大（实测 2026-11-20 晚）：
+          //   电信：每次访问服务端换发票据 → 会话能一直续下去，访问是真正有效的保活。
+          //   移动：访问只把 cookie 过期时间推后（值不变），会话仍是「登录后 ~60 分钟」硬上限，
+          //         访问救不回来。所以必须在窗口耗尽前就提醒用户重新扫码登录，
+          //         否则用户只能等到界面上出现「未登录」才知道。
+          const meta = readSessionMeta(storageFile);
+          const rule = CARRIER_RULES[p.provider] || {};
+          const maxAge = rule.sessionMaxAgeMs;
+          if (maxAge && meta?.loggedInAt && rule.sessionRenewable !== true) {
+            const leftMs = meta.loggedInAt + maxAge - Date.now();
+            if (leftMs > 0 && leftMs <= 20 * 60 * 1000) {
+              await notifySessionExpiring(p, meta, leftMs, storageKeyFor(p.name, p.provider, p.id));
+            }
+          }
         } else if (r.loggedIn === false) {
           console.warn(`[keepalive] ${p.name} 会话已失效（${r.reason || '跳转 ' + r.url}），需重新运行 node scripts/wallet-login.mjs ${storageKeyFor(p.name, p.provider, p.id)}`);
           // 保活直接访问了网厅，它对会话是否有效的判断比 cookie 过期时间更可信
@@ -177,11 +223,22 @@ export function startCarrierKeepAlive() {
           const lastPush = Number(db.prepare('SELECT value FROM settings WHERE key = ?').get(pushKey)?.value || 0);
           if (Date.now() - lastPush >= 6 * 3600 * 1000) {
             db.prepare('INSERT OR REPLACE INTO settings (key, value) VALUES (?, ?)').run(pushKey, String(Date.now()));
-            await sendPhoneNotify(
+            const res = await sendPhoneNotify(
               `⚠️ ${p.name} 登录态已失效`,
               `保活检测到网厅会话已失效（${r.reason || '跳转 ' + r.url}）。\n请重新登录：node scripts/wallet-login.mjs ${storageKeyFor(p.name, p.provider, p.id)}`
             );
-            console.log(`[keepalive] 已推送登录态失效提醒: ${p.name}`);
+            // 如实上报：没配推送通道时 res.delivered=false，不能再谎报「已推送」
+            // （实测 2026-11-20 晚：config.json 里两个通道都是空的，
+            //   日志却一直打印「已推送登录态失效提醒」，用户一条也没收到）。
+            if (res.delivered) {
+              console.log(`[keepalive] 已推送登录态失效提醒: ${p.name}`);
+            } else {
+              console.warn(
+                `[keepalive] ${p.name} 登录态已失效，但**没有推送出去**：` +
+                'config.json 的 notify.serverchan / notify.bark 都没配置，手机收不到提醒。' +
+                '请改用界面上的「登录」按钮，或配置推送通道。'
+              );
+            }
           }
         } else {
           console.warn(`[keepalive] ${p.name} 会话续期失败`);

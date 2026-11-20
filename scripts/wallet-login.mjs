@@ -13,6 +13,7 @@ import { fileURLToPath } from 'node:url';
 import db, { initSchema } from '../src/db/index.js';
 import { parseScrapeRule, STORAGE_DIR, STORAGE_KEY_BY_NAME, BROWSER_ARGS, SAFE_KEYWORD_BY_KEY, detectCarrierLoggedIn, storageKeyFor, ruleKeyFor, CARRIER_ENTRY_URLS, enrichRuleWithBuiltin, CARRIER_RULES, clickByText } from '../src/services/scraper_wallets.mjs';
 import { missingRequiredCookies } from '../src/services/session_status.mjs';
+import { markSessionLoggedIn, parseMaskedAccount } from '../src/services/session_meta.mjs';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 
@@ -218,7 +219,15 @@ async function waitLoggedIn(page, keyword, { timeoutMs = 10 * 60 * 1000, isCarri
           console.log(`  ✗ ${p.name} 登录态不完整，未覆盖 ${storageFile}（避免把可用登录态写成残缺态）`);
         } else {
           await context.storageState({ path: storageFile });
+          // 记录会话起点与绑定号码：
+          //   实测（2026-11-20 晚）移动的会话是「登录后固定 ~60 分钟」的硬上限，
+          //   访问不延长它 → 「预计存活」必须从登录时刻起算；
+          //   同时记下网厅认定的号码，避免副卡被登成主卡号后余额串号。
+          const pageText = await page.evaluate(() => (document.body ? document.body.innerText : '')).catch(() => '');
+          const account = parseMaskedAccount(pageText);
+          markSessionLoggedIn(storageFile, account);
           console.log(`  ✓ ${p.name} 登录成功，登录态已保存到 ${storageFile}`);
+          if (account) console.log(`  · 绑定号码：${account}`);
         }
       } else {
         console.log(`  ✗ ${p.name} 未完成登录（窗口关闭或超时），跳过。`);
