@@ -3,7 +3,7 @@
 // 导出到 src/wallet-states/storage_<key>.json，之后定时巡检无头加载该文件即可。
 // 用法：
 //   node scripts/wallet-login.mjs            # 登录数据库里全部浏览器抓取型平台（空库则用预设）
-//   node scripts/wallet-login.mjs bailian    # 只登录指定平台（tencent/mimo/kimi/bailian/minimax/volc）
+//   node scripts/wallet-login.mjs bailian    # 只登录指定平台（tencent/mimo/kimi/bailian/minimax/volc/carrier_cmcc/carrier_ct/carrier_cu）
 //   node scripts/wallet-login.mjs --list     # 只列出需要登录的平台，不打开浏览器
 import { chromium } from 'playwright';
 import fs from 'node:fs';
@@ -23,12 +23,17 @@ const PRESET_PLATFORMS = [
   { key: 'bailian',  name: '阿里云百炼',     url: 'https://billing-cost.console.aliyun.com',                rule: '{"keyword":"可用额度","max":10000000}' },
   { key: 'minimax',  name: 'MiniMax',        url: 'https://platform.minimax.cn/console/recharge-records',   rule: '{"keyword":"可用额度","max":10000000}' },
   { key: 'volc',     name: '火山引擎',       url: 'https://console.volcengine.com/finance/account-overview', rule: '{"keyword":"可用余额","max":10000000}' },
+  // 三大运营商个人卡：网上营业厅首页（登录后靠内置规则点菜单进余额页）
+  { key: 'carrier_cmcc', name: '中国移动话费', url: 'https://www.10086.cn/',  rule: '' },
+  { key: 'carrier_ct',   name: '中国电信话费', url: 'https://www.189.cn/',   rule: '' },
+  { key: 'carrier_cu',   name: '中国联通话费', url: 'https://www.10010.com/', rule: '' },
 ];
 
 // 从数据库动态读取所有"浏览器抓取型"平台（新添加的 scrape 平台也会被覆盖到）
+// 三大运营商个人卡走 provider=carrier_* 且 balance_type=api，同样需要网厅登录态，一并纳入
 function targetsFromDb() {
   const rows = db.prepare(
-    "SELECT name, provider, balance_api_url, balance_json_path FROM platforms WHERE balance_type='scrape' AND active = 1"
+    "SELECT name, provider, balance_api_url, balance_json_path FROM platforms WHERE (balance_type='scrape' OR provider LIKE 'carrier_%') AND active = 1"
   ).all();
   return rows
     .filter((r) => r.balance_api_url)
@@ -54,7 +59,10 @@ async function waitLoggedIn(page, keyword, timeoutMs = 10 * 60 * 1000) {
     try {
       const url = page.url();
       const text = await page.evaluate(() => (document.body ? document.body.innerText : ''));
-      const ok = !isLoginUrl(url) && (!keyword || text.includes(keyword));
+      // keyword 可能是字符串或候选数组（运营商页面文案多变，任一命中即算命中）
+      const kws = Array.isArray(keyword) ? keyword : [keyword];
+      const hit = kws.some((k) => k && text.includes(k));
+      const ok = !isLoginUrl(url) && (!keyword || hit);
       // 诊断日志：每 10 秒打印一次当前 URL 和关键字命中情况，便于排查登录卡住
       const elapsed = Date.now() - start;
       if (elapsed % 10000 < 2000) {

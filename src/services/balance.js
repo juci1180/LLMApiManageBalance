@@ -4,7 +4,7 @@
 import db from '../db/index.js';
 import { createHash, createHmac } from 'node:crypto';
 import { scrapeMiniMaxBalance } from './scraper_minimax.mjs';
-import { scrapeWalletBalance, parseScrapeRule, storageFileFor, enrichRuleWithBuiltin } from './scraper_wallets.mjs';
+import { scrapeWalletBalance, parseScrapeRule, storageFileFor, enrichRuleWithBuiltin, CARRIER_ENTRY_URLS } from './scraper_wallets.mjs';
 
 // 火山引擎 OpenAPI 签名（HMAC-SHA256，类似 AWS SigV4）
 function sha256hex(s) { return createHash('sha256').update(s).digest('hex'); }
@@ -76,6 +76,27 @@ function getByPath(obj, path) {
     if (acc == null) return null;
     return acc[key];
   }, obj);
+}
+
+// 三大运营商个人卡抓取：与 scrape 模式同一套浏览器逻辑，
+// 差别在于运营商的余额页需要从网厅首页点菜单进入，且没有统一的货币符号。
+async function scrapeCarrier(platform, providerKey) {
+  const url = platform.balance_api_url || CARRIER_ENTRY_URLS[providerKey];
+  if (!url) {
+    throw new Error('运营商平台未配置网厅地址（balance_api_url）');
+  }
+  const rule = enrichRuleWithBuiltin(parseScrapeRule(platform.balance_json_path), platform.name, providerKey);
+  const storageFile = storageFileFor(platform.name, providerKey);
+  if (!storageFile) {
+    throw new Error(`尚未登录 ${platform.name}：请先运行 node scripts/wallet-login.mjs ${providerKey} 完成一次网厅登录`);
+  }
+  const balance = await scrapeWalletBalance({
+    url,
+    rule,
+    debugLabel: platform.name,
+    storageFile,
+  });
+  return { balance, raw: {}, unit: platform.currency || '元', scraped: true };
 }
 
 // 内置平台余额查询器
@@ -327,6 +348,20 @@ const providers = {
       }
     }
     throw new Error('小米MiMo余额查询失败，所有URL和认证方式都尝试过了');
+  },
+
+  // 三大运营商个人卡（手机 SIM 卡）：运营商没有面向个人开放的查余额 API，
+  // 官方能力开放平台的余额接口需企业资质审核 + 用户授权，个人拿不到。
+  // 因此走网上营业厅页面抓取：登录一次拿登录态，之后定时读网厅余额页。
+  // 抓取逻辑完全复用 scrape 模式，仅 provider 键不同（便于前端与登录脚本识别）。
+  carrier_cmcc: async (platform) => {
+    return await scrapeCarrier(platform, 'carrier_cmcc');
+  },
+  carrier_ct: async (platform) => {
+    return await scrapeCarrier(platform, 'carrier_ct');
+  },
+  carrier_cu: async (platform) => {
+    return await scrapeCarrier(platform, 'carrier_cu');
   },
 
   scrape: async (platform) => {

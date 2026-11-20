@@ -1,0 +1,158 @@
+# 研发交付说明 · 三大运营商个人卡话费余额监控
+
+## 1. 变更摘要
+
+- 关联 PRD ID：无（用户对话需求：查三大运营商电话卡余额并纳入监控）
+- 主要改动模块：
+  - `src/services/scraper_wallets.mjs`：新增运营商规则表 `CARRIER_RULES`、网厅入口 `CARRIER_ENTRY_URLS`；规则解析支持候选关键字组 `keywords` 与菜单入口 `entries`；抓取流程支持"首页没余额就点菜单进入子页"；关键字支持数组匹配。
+  - `src/services/balance.js`：新增 `carrier_cmcc` / `carrier_ct` / `carrier_cu` 三个查询器与共享函数 `scrapeCarrier()`。
+  - `public/index.html`：新增三个运营商 provider 选项、图标、快速添加模板；登录按钮与"全部一键登录"按钮对运营商生效。
+  - `scripts/wallet-login.mjs`：登录目标纳入 `provider LIKE 'carrier_%'` 的平台；登录检测关键字支持数组。
+  - `scripts/setup-carrier-platforms.mjs`：新增，一次性把三家运营商写入数据库。
+  - `scripts/test-carrier-balance.mjs`：新增，解析逻辑单元测试（37 项）。
+
+## 2. 调研结论：官方接口到底有没有
+
+这是本次调研的核心问题，结论需要分两层说清楚。
+
+### 2.1 官方接口：存在，但个人拿不到
+
+三家运营商**都**提供官方余额查询接口，位置在各自的能力开放平台，不是没有。但这些接口的获取条件对企业资质有硬性要求：
+
+| 运营商 | 官方接口所在 | 接口 | 余额字段 | 申请条件 |
+|---|---|---|---|---|
+| 中国移动 | 中国移动 IT 能力开放平台 `it.open.10086.cn` | 「查账户余额」「话费余额鉴权」「查账单」 | 平台文档未在公开页展示字段名 | 企业账号 + 实名认证 + 场景审核，且需用户短信授权码 |
+| 中国电信 | 天翼开放平台 `open.e.189.cn` | `POST /api/oauth2/account/queryCTPackage.do` | `totalBalanceAvailable`（单位：**分**） | 企业开发者入驻 + 能力商店申请 + 能力签约 |
+| 中国联通 | A-PaaS 能力开放平台 | 「账户余额查询」（API 规范 v1.8 §5.3）、「当月话费查询」§5.6、「欠费查询」§5.4 | 字段名随规范版本 | 企业资质 + 能力申请审核 |
+
+结论：**个人开发者无法自助申请这些接口**。三条硬性门槛——企业实名认证、能力商店申请与资质审核、用户侧逐次短信授权（移动的「用户授权码申请接口」需要用户回短信验证码）。第三点尤其关键：即使拿到接口权限，查询某个用户的话费余额仍需该用户每次授权，这不是能用于后台定时巡检的形态。
+
+因此本项目对个人卡走**网上营业厅页面抓取**，这是个人唯一能拿到程序化数据的路径。
+
+### 2.2 抓取路径的可行性与代价
+
+三家网厅的个人查余额入口（官方帮助文档与官网路径）：
+
+- 中国移动：网上营业厅 `www.10086.cn`，登录后「我的移动」→ 账户余额（服务密码 / 短信随机密码 / 网站密码均可登录）
+- 中国电信：网上营业厅 `www.189.cn`，首页 → 服务大厅 → 查询服务 → 话费账单 → 余额查询（服务密码 / 短信验证码）
+- 中国联通：网上营业厅 `www.10010.com`，登录 → 查询 → 余额查询（手机号 + 服务密码 / 短信验证码）
+
+抓取方案的两点现实约束：
+
+1. **省际差异**：网厅是分省部署的，菜单文案与路径在各省不完全一致，所以规则里配了候选关键字组和多个菜单入口文字，按顺序尝试。
+2. **登录态是前提**：三家都要服务密码或短信验证码，我无法代办，必须由你本人完成一次登录。登录态存在 `src/wallet-states/storage_carrier_*.json`（已在 `.gitignore` 中，不入库）。
+
+### 2.3 被排除的路径
+
+| 路径 | 为什么不做 |
+|---|---|
+| 短信指令自动化（发 10086 查余额） | 10086 的回复短信只发回持卡手机。第三方短信通道（阿里云/腾讯云/创蓝等）只能下发、收不到运营商回信。要自动解析回复必须上短信转发硬件或安卓自动化设备，投入产出不划算。 |
+| 物联网卡厂商 API | 能力确定存在（移动 OneNET、电信 CTW、联通物联网平台），但需要企业资质且卡必须是物联网卡。你的是普通个人实体卡，不适用。 |
+| 渠道商商务接口 | 运营商把「话费充值 + 余额查询」打包给渠道商，需商务签约与单独采购，个人拿不到。 |
+
+## 3. 运行与验证
+
+```bash
+# 1) 把三家运营商加入数据库（可选，页面「快速添加」也能加）
+node scripts/setup-carrier-platforms.mjs
+
+# 2) 首次登录网厅（需要你本人输入服务密码/短信验证码，弹窗交互）
+node scripts/wallet-login.mjs carrier_cmcc   # 中国移动
+node scripts/wallet-login.mjs carrier_ct     # 中国电信
+node scripts/wallet-login.mjs carrier_cu     # 中国联通
+# 或一次跑完：node scripts/wallet-login.mjs
+
+# 3) 无头验证抓取结果
+node scripts/wallet-check.mjs
+
+# 4) 测试
+npm test                                  # 端到端冒烟（31 项）
+node scripts/test-carrier-balance.mjs     # 运营商解析单元测试（37 项）
+
+# 5) 本地启动
+npm run dev
+```
+
+实测结果（本次改动后）：
+
+- `npm test` → 31 项全部通过，exit 0
+- `node scripts/test-carrier-balance.mjs` → 37 项全部通过，exit 0
+- 真实网厅抓取**未做联调**：需要你的登录态，且网厅存在地区差异与风控，无法在无你的参与下取得真实余额。
+
+## 4. 配置与环境变量
+
+| 变量 | 必填 | 说明（不含秘密） |
+|---|---|---|
+| LLM_MANAGER_PORT | 否 | 服务端口，默认见 `scripts/port.mjs` |
+| LLM_MANAGER_DATA_DIR | 否 | 数据库目录，默认 `src/data/` |
+
+平台级配置（在页面「编辑」里改）：
+
+| 字段 | 说明 |
+|---|---|
+| `provider` | `carrier_cmcc` / `carrier_ct` / `carrier_cu` |
+| `balance_api_url` | 网厅入口 URL，默认取 `CARRIER_ENTRY_URLS`，可按你所在省份改成具体网厅地址 |
+| `balance_json_path` | 提取规则，留空即用内置规则；可写 JSON 覆盖 `keyword` / `keywords` / `regex` / `entries` / `max` |
+| `currency` | 固定 `CNY` |
+| `threshold` | 默认 20 元（话费余额远低于 API 余额，建议阈值调小） |
+| `recharge_amount` | 默认 100 元 |
+
+**登录凭据（服务密码、短信验证码）不写入数据库、不写入代码库、不写入本文件。** 它们只在登录弹窗里当场输入，产物是 `src/wallet-states/storage_carrier_*.json`（已被 `.gitignore` 排除）。
+
+## 5. 数据库/迁移
+
+无 schema 变更。`platforms` 表已有 `provider` / `balance_type` / `balance_api_url` / `balance_json_path` 字段，运营商复用 `balance_type='api'` + `provider=carrier_*` 的组合，由 `fetchBalance` 按 provider 路由到对应查询器。
+
+## 6. 已知限制与后续项
+
+- **未做真实网厅联调**：需要你的登录态与实际省份网厅验证。三家网厅分省部署，菜单文案有差异，若某家抓不到，按 §7 的方式调规则即可。
+- **依赖登录态**：登录态过期（运营商通常几天到几周）会导致抓取失败。系统已有连续 3 次失败推手机提醒的机制，但重新登录仍需你本人操作。
+- **运营商风控**：频繁访问网厅可能触发验证码或限流。巡检频率为每小时一次，属正常用户量级，但异常时会失败并记录错误，不会静默返回 0。
+- **只取话费余额**：当前只提取金额，流量余量与短信余量未提取（页面上标签与格式差异更大，且阈值告警语义不同）。需要时可在 `CARRIER_RULES` 里加 `dataKey` 字段扩展。
+- **余额单位为元**：电信官方接口返回的是「分」，本项目抓取路径读的是页面展示的元，未做单位换算。
+- **回退路径**：任何一家运营商抓取不稳，把该平台的 `balance_type` 改成 `manual`，用页面「录入余额」按钮手工录入，阈值告警照常工作。
+
+## 7. 建议 audit/QA 验证点
+
+| 项 | 步骤 | 期望 |
+|---|---|---|
+| 解析正确性 | 运行 `node scripts/test-carrier-balance.mjs` | 37 项全通过，含负余额、千分位、栏目名不误命中、结构不符返回 null |
+| 存量不受影响 | 运行 `npm test` | 31 项全通过，已有平台行为不变 |
+| 登录流程 | 运行 `node scripts/wallet-login.mjs carrier_cmcc`，在弹窗输入服务密码 | 提示「登录成功，登录态已保存到 src/wallet-states/storage_carrier_cmcc.json」 |
+| 抓取可用 | 运行 `node scripts/wallet-check.mjs` | 运营商行输出 `OK 中国移动话费 : <数值>`；未登录则输出可读错误 |
+| 未登录可读性 | 删除某运营商登录态文件后刷新该平台 | 返回「尚未登录 xxx：请先运行 node scripts/wallet-login.mjs carrier_xx」而非 500 |
+| 失败不误建单 | 抓取失败后检查充值单列表 | 不产生新充值单（失败返回 null 而非 0） |
+| 降级可用 | 把运营商平台 `balance_type` 改为 `manual` 并录入余额 | 前端显示正常，低于阈值时正常生成充值单 |
+
+### 规则调优指引（抓不到余额时）
+
+1. 看错误信息里的关键字组，确认网厅页面上的实际文案。
+2. 在平台编辑页把 `balance_json_path` 填成 JSON，例如：
+   ```json
+   {"keywords":["账户余额","本月可用余额"],"regex":"(?:账户余额|本月可用余额)[\\s:：()（）¥￥元]*(-?\\d[\\d,]*(?:\\.[0-9]{1,2})?)","entries":["服务大厅","查询服务","话费账单"],"max":100000}
+   ```
+3. 或者直接改 `src/services/scraper_wallets.mjs` 的 `CARRIER_RULES`（三家的标签组、正则、菜单入口都在这里），改完重跑单元测试。
+
+## 8. 回滚说明
+
+本改动是纯增量，回滚成本低：
+
+1. 删掉 `src/services/balance.js` 里的三个 `carrier_*` 查询器与 `scrapeCarrier()` 函数。
+2. 删掉 `src/services/scraper_wallets.mjs` 里的 `CARRIER_RULES` / `CARRIER_ENTRY_URLS`，还原 `parseScrapeRule`、`extractBalance`、`enrichRuleWithBuiltin`、`scrapeOnePage`、`waitForKeyword` 的关键字处理为单字符串版本。
+3. 删掉 `public/index.html` 里三个 provider 选项、图标、快速添加模板与 `isCarrier()` 相关判断。
+4. 删掉 `scripts/wallet-login.mjs` 里 `provider LIKE 'carrier_%'` 的查询条件与三个预设项。
+5. 删掉 `scripts/setup-carrier-platforms.mjs` 与 `scripts/test-carrier-balance.mjs`。
+6. 数据库里删除三条 `provider LIKE 'carrier_%'` 的平台记录即可，已有平台数据不受影响。
+
+回滚后 `npm test` 仍应 31 项全通过。
+
+## 9. 官方文档出处
+
+- 中国移动 IT 能力开放平台接口目录（查账户余额等）：`https://it.open.10086.cn/#/production/nav/refer`
+- 中国移动 10086 帮助中心（个人查余额方式、登录密码种类）：`https://www.10086.cn/support/selfservice/account/ah/`
+- 中国移动短信营业厅指令表（101/YE/CXYE 查余额等）：`https://www.jl.10086.cn/support/channelhelp/note/`
+- 中国电信天翼开放平台「获取用户套餐信息」接口文档（`totalBalanceAvailable`，单位分）：`https://id.189.cn/html/api_detail_243.html`
+- 中国电信天翼开放平台入驻与能力申请流程：`http://id.dlife.cn/wap/index.html`
+- 中国电信广东网上营业厅余额查询自助说明：`https://gd.189.cn/support/newbin/yecx.htm`
+- 中国联通 A-PaaS 能力开放平台 API 规范 v1.8（账户余额查询 §5.3、当月话费 §5.6、欠费查询 §5.4）：`https://m.wendangwang.com/doc/60c6cb07a89ca3610bac1bba82aa9558b00850a5/5`
+- 中国联通网上营业厅查询入口（账户余额）：`http://iservice.10010.com/elecService/wap.html`

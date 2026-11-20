@@ -91,6 +91,22 @@ config.json 的 `notify` 字段：
 - **scrape**：浏览器抓取钱包页（见上「一次性登录」）；`balance_api_url` 填钱包页面网址，`balance_json_path` 填提取规则（纯关键字如 `可用额度`，或 `{"keyword":"可用额度","max":10000000}`）
 - **manual**：手动录入，页面「录入余额」按钮
 
+### 三大运营商个人卡（手机 SIM 卡）
+
+三家运营商都有官方余额接口，但都要求企业资质审核 + 用户逐次短信授权，个人拿不到，因此走**网上营业厅页面抓取**。
+
+- `provider` 填 `carrier_cmcc` / `carrier_ct` / `carrier_cu`（对应移动 / 电信 / 联通）
+- 无需 API Key；首次需运行 `node scripts/wallet-login.mjs carrier_cmcc`（或 `carrier_ct` / `carrier_cu`）登录网厅，需本人输入服务密码或短信验证码
+- 登录态存于 `src/wallet-states/storage_carrier_*.json`（已排除出版本库）
+- 抓取规则内置在 `src/services/scraper_wallets.mjs` 的 `CARRIER_RULES`，含候选关键字组与网厅菜单入口；网厅分省部署，菜单文案有差异，抓不到时可在平台编辑页用 `balance_json_path` 覆盖
+- 建议 `threshold` 调小（默认 20 元），话费余额量级远小于 API 余额
+- 详情与官方接口出处见 `docs/carrier-balance/README.md`
+
+```bash
+node scripts/setup-carrier-platforms.mjs   # 一键加入三家运营商
+node scripts/test-carrier-balance.mjs      # 解析逻辑单元测试
+```
+
 ## 充值流程状态机
 
 ```

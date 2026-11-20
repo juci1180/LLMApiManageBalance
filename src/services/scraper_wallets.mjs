@@ -41,8 +41,10 @@ async function connectDesktopChrome(port = CDP_PORT) {
 //   - JSON：{"keyword":"可用额度","regex":"[0-9.,]+","max":10000000}
 export function parseScrapeRule(raw) {
   let keyword = null;
+  let keywords = null;
   let regex = null;
   let max = 1e7;
+  let entries = null;
   if (raw) {
     try {
       // JSON 字符串内不允许出现真实换行，先把真实换行转义为 \n 再解析
@@ -50,13 +52,17 @@ export function parseScrapeRule(raw) {
       const escaped = String(raw).replace(/\n/g, '\\n');
       const obj = JSON.parse(escaped);
       keyword = obj.keyword || null;
+      // 运营商网厅页面文案随版本变化，允许配一组候选关键字（任一命中即算命中）
+      keywords = Array.isArray(obj.keywords) ? obj.keywords.filter(Boolean) : null;
       regex = obj.regex || null;
       max = obj.max ?? 1e7;
+      // entries：网厅首页只有菜单时，按这些文字依次点击进入余额子页
+      entries = Array.isArray(obj.entries) ? obj.entries.filter(Boolean) : null;
     } catch {
       keyword = raw; // 不是 JSON，整串当作关键字
     }
   }
-  return { keyword, regex, max };
+  return { keyword, keywords, regex, max, entries };
 }
 
 // 内置各平台"安全宽松关键字"（登录检测与抓取兜底使用）：
@@ -70,6 +76,10 @@ export const SAFE_KEYWORD_BY_KEY = {
   kimi: '可用余额',
   bailian: '可用额度',
   volc: '可用余额',
+  // 三大运营商个人卡：登录后网厅右上角出现"退出登录"，据此判断登录成功
+  carrier_cmcc: ['退出登录', '退出'],
+  carrier_ct: ['退出登录', '退出'],
+  carrier_cu: ['退出登录', '退出'],
 };
 
 // 内置各平台精确提取正则（按登录态 key 匹配）：
@@ -91,18 +101,61 @@ export const PRECISE_REGEX_BY_KEY = {
   volc: '可用余额[^\\d¥￥]{0,12}?[¥￥]\\s*(-?\\d[\\d,]*(?:\\.[0-9]+)?)',
 };
 
+// 三大运营商网厅入口（登录后靠 CARRIER_RULES.entries 点菜单进入余额页）
+// 页面结构与登录方式各省略有差异，可在平台配置里覆盖 balance_api_url
+export const CARRIER_ENTRY_URLS = {
+  carrier_cmcc: 'https://www.10086.cn/',
+  carrier_ct: 'https://www.189.cn/',
+  carrier_cu: 'https://www.10010.com/',
+};
+
+// 三大运营商个人卡专用配置（个人实体卡没有自助申请的官方余额 API，走网厅页面抓取）：
+//  - balanceKeywords：余额在页面上的标签（等待命中用，任一命中即算命中）
+//  - regex：精确提取余额（单位元，负数表示欠费）
+//  - entries：网厅首页的菜单入口文字，抓取时依次点击进入余额子页
+export const CARRIER_RULES = {
+  carrier_cmcc: {
+    balanceKeywords: ['账户余额', '账户可用余额', '可用余额'],
+    regex: '(?:账户余额|账户可用余额|可用余额)[\\s:：()（）¥￥元]*(-?\\d[\\d,]*(?:\\.[0-9]{1,2})?)',
+    entries: ['我的移动', '费用查询', '账户信息', '查询服务', '话费余额'],
+  },
+  carrier_ct: {
+    balanceKeywords: ['账户余额', '本月可用余额', '可用余额'],
+    regex: '(?:账户余额|本月可用余额|可用余额)[\\s:：()（）¥￥元]*(-?\\d[\\d,]*(?:\\.[0-9]{1,2})?)',
+    entries: ['服务大厅', '查询服务', '费用查询', '话费账单', '我的账户'],
+  },
+  carrier_cu: {
+    balanceKeywords: ['账户余额', '账户当前可用余额', '可用余额'],
+    regex: '(?:账户余额|账户当前可用余额|可用余额)[\\s:：()（）¥￥元]*(-?\\d[\\d,]*(?:\\.[0-9]{1,2})?)',
+    entries: ['查话费', '费用查询', '余额查询', '我的账单', '账户余额'],
+  },
+};
+
 // 给规则补上内置安全关键字与精确正则（内置优先，防止数据库规则被写成坏值），返回新规则对象
 export function enrichRuleWithBuiltin(rule, name, provider) {
   if (!rule) return rule;
   const key = STORAGE_KEY_BY_NAME[name] || provider;
+  // 运营商：套用内置的标签组、精确正则与网厅菜单入口
+  const carrier = CARRIER_RULES[key];
+  if (carrier) {
+    return {
+      keyword: rule.keyword || carrier.balanceKeywords[0],
+      keywords: rule.keywords || carrier.balanceKeywords,
+      regex: rule.regex || carrier.regex,
+      max: rule.max,
+      entries: rule.entries || carrier.entries,
+    };
+  }
   if (key) {
     const safeKeyword = SAFE_KEYWORD_BY_KEY[key];
     const precise = PRECISE_REGEX_BY_KEY[key];
     if (safeKeyword || precise) {
       return {
         keyword: safeKeyword || rule.keyword,
+        keywords: rule.keywords || null,
         regex: rule.regex || precise || null,
         max: rule.max,
+        entries: rule.entries || null,
       };
     }
   }
@@ -127,13 +180,18 @@ export function extractBalance(text, { keyword, regex, max }) {
   }
   let segment = text;
   if (keyword) {
+    // 关键字允许是字符串或候选数组（运营商页面文案多变，任一命中即可）
+    const keys = (Array.isArray(keyword) ? keyword : [keyword]).filter(Boolean);
     const positions = [];
-    let idx = text.indexOf(keyword);
-    while (idx >= 0) {
-      positions.push(idx);
-      idx = text.indexOf(keyword, idx + keyword.length);
+    for (const k of keys) {
+      let idx = text.indexOf(k);
+      while (idx >= 0) {
+        positions.push(idx);
+        idx = text.indexOf(k, idx + k.length);
+      }
     }
     if (positions.length === 0) return null; // 关键字都没出现，视为页面结构不符
+    positions.sort((a, b) => a - b);
     let chosen = positions[0]; // 无符号特征时退回第一次出现
     for (const pos of positions) {
       if (/[¥￥]/.test(text.slice(pos, pos + 40))) { // 关键字后 40 字符内有金额符号即视为真实标签
@@ -172,7 +230,12 @@ async function waitForKeyword(page, keyword, { waitKeywordMs = 30000 } = {}) {
       loginStreak = 0;
     }
     if (keyword) {
-      const has = await page.evaluate((kw) => (document.body?.innerText || '').includes(kw), keyword);
+      // keyword 允许是字符串或候选数组（运营商页面文案多变）
+      const list = Array.isArray(keyword) ? keyword : [keyword];
+      const has = await page.evaluate((kws) => {
+        const text = document.body?.innerText || '';
+        return kws.some((k) => text.includes(k));
+      }, list);
       if (has) return { ok: true };
     }
     await page.waitForTimeout(2000);
@@ -198,6 +261,10 @@ export const STORAGE_KEY_BY_NAME = {
   '阿里云': 'bailian',
   'MiniMax': 'minimax',
   '火山引擎': 'volc',
+  // 三大运营商个人卡（网厅抓取）
+  '中国移动话费': 'carrier_cmcc',
+  '中国电信话费': 'carrier_ct',
+  '中国联通话费': 'carrier_cu',
 };
 
 // 按平台名找登录态文件；找不到返回 null
@@ -220,6 +287,18 @@ export const BROWSER_ARGS = [
   '--disable-features=DeviceBoundSessions,DeviceBoundSessionsV2',
 ];
 
+// 按可见文字点击页面元素（网厅菜单入口），成功返回 true
+async function clickByText(page, text, timeoutMs = 6000) {
+  try {
+    const loc = page.getByText(text, { exact: false }).first();
+    await loc.click({ timeout: timeoutMs });
+    await page.waitForTimeout(1500);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
 // 在给定页面上完成一次抓取：打开钱包页 → 等待关键字 → 提取余额
 // CDP 模式下不拦截图片（路由拦截只对独立启动的浏览器有效）
 async function scrapeOnePage(page, { url, rule, debugLabel = '平台', waitMs = 8000, blockAssets = true }) {
@@ -229,14 +308,27 @@ async function scrapeOnePage(page, { url, rule, debugLabel = '平台', waitMs = 
   await page.goto(url, { waitUntil: 'domcontentloaded', timeout: 45000 });
   await page.waitForTimeout(waitMs);
 
+  // 余额标签：运营商页面文案多变，用规则里的候选组，任一命中即算命中
+  const targets = (rule.keywords && rule.keywords.length ? rule.keywords : [rule.keyword]).filter(Boolean);
+
   // 等待余额关键字出现；期间若连续两次停在登录页则判定未登录
-  const { ok, loginUrl } = await waitForKeyword(page, rule.keyword);
+  let { ok, loginUrl } = await waitForKeyword(page, targets);
+  if (!ok && !loginUrl && Array.isArray(rule.entries) && rule.entries.length) {
+    // 网厅首页通常只有菜单：依次点击入口文字，进入余额子页后重新找关键字
+    for (const entry of rule.entries) {
+      if (!(await clickByText(page, entry))) continue;
+      const again = await waitForKeyword(page, targets, { waitKeywordMs: 12000 });
+      if (again.ok) { ok = true; break; }
+      if (again.loginUrl) { loginUrl = again.loginUrl; break; }
+    }
+  }
   if (!ok) {
     if (loginUrl) {
       throw new Error(`${debugLabel} 未登录（跳转至 ${loginUrl}）`);
     }
-    throw new Error(`${debugLabel}: 页面中未找到余额（关键字="${rule.keyword}"）`);
+    throw new Error(`${debugLabel}: 页面中未找到余额（关键字="${targets.join('/')}"）`);
   }
+
 
   const text = await page.evaluate(() => (document.body ? document.body.innerText : ''));
   const balance = extractBalance(text, rule);
