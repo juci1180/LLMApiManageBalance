@@ -27,6 +27,9 @@ npm install
 # 2. 启动服务
 npm start
 # 或直接双击 启动项.bat（提供菜单：启动/查看服务、打开汇总页）
+
+# 3. 端到端冒烟测试（自动隔离实例 + 临时库，不碰真实数据）
+npm test
 ```
 
 启动后访问 `http://localhost:<config.json 里的 port>`（默认 3000），数据库（src/data/llm-manager.db）首次启动自动创建，会被 .gitignore 排除、不上传。

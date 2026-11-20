@@ -7,6 +7,7 @@ import { spawn } from 'node:child_process';
 
 // Windows 桌面弹窗提醒（独立进程，不阻塞监控）
 function desktopAlert(title, msg) {
+  if (process.env.LLM_MANAGER_NO_DESKTOP_ALERT) return; // 测试环境跳过桌面弹窗
   try {
     const safeTitle = String(title).replace(/'/g, "''");
     const safeMsg = String(msg).replace(/'/g, "''");

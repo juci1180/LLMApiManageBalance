@@ -6,7 +6,7 @@ import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
-const dataDir = join(__dirname, '..', 'data');
+const dataDir = process.env.LLM_MANAGER_DATA_DIR || join(__dirname, '..', 'data'); // 测试可用该环境变量隔离数据库
 const dbFile = join(dataDir, 'llm-manager.db');
 mkdirSync(dataDir, { recursive: true });
 

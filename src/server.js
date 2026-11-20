@@ -33,7 +33,7 @@ await registerRoutes(app);
 startMonitor();
 
 // 启动服务
-const port = config.port ?? 3000;
+const port = Number(process.env.LLM_MANAGER_PORT) || config.port || 3000;
 const host = config.host ?? '0.0.0.0';
 await app.listen({ port, host });
 console.log(`大模型 API 管理平台已启动: http://localhost:${port}`);

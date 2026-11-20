@@ -1,0 +1,14 @@
+固化端到端冒烟测试：npm test 一键运行，隔离实例不碰真实数据
+
+- 新增 scripts/test-smoke.mjs：自动启动隔离实例（空闲端口 + 系统临时目录建库），
+  跑完自动清理；覆盖平台增删、密钥掩码、数值校验、充值单状态机
+  （pending→notified→paid→credited）、打款基准线快照 balance_at_paid、
+  到账自动检测、撤销打款、停用平台刷新、删除级联清理、
+  智谱 token 脚本定位与假 Token 失效报错，共 31 项断言。
+- src/db/index.js：LLM_MANAGER_DATA_DIR 环境变量可覆盖数据库目录（测试隔离用）
+- src/server.js：LLM_MANAGER_PORT 环境变量可覆盖端口（测试隔离用）
+- src/services/recharge.js：LLM_MANAGER_NO_DESKTOP_ALERT=1 时跳过桌面弹窗（测试防打扰）
+- scripts/zhipu-token-refresh.mjs：baseUrl 优先读同一端口环境变量，测试复用同一实例
+- README / PROJECT_HANDOVER 补充 npm test 说明
+
+验证：npm test 31/31 通过（真实启动服务、临时库、跑完自动清理）。

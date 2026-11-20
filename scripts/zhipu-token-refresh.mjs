@@ -29,6 +29,8 @@ const BALANCE_URL = 'https://open.bigmodel.cn/api/biz/account/query-customer-acc
 
 // 服务地址：端口从 config.json 读，与 src/server.js 保持一致
 export function baseUrl() {
+  // 测试/多实例：环境变量优先，其次 config.json（与 src/server.js 口径一致）
+  if (process.env.LLM_MANAGER_PORT) return `http://127.0.0.1:${process.env.LLM_MANAGER_PORT}`;
   let port = 3000;
   try {
     const cfg = JSON.parse(readFileSync(join(PROJECT_ROOT, 'config.json'), 'utf-8'));
