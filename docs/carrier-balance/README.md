@@ -105,6 +105,39 @@ Playwright 的 `chromium.executablePath()` 依赖 `PLAYWRIGHT_BROWSERS_PATH` 环
 
 代码已改为 `resolveBrowserExecutable()`：按「Playwright 自带 chromium → `PLAYWRIGHT_BROWSERS_PATH` 下的 `chromium-*/chrome-win64/chrome.exe` → 系统安装的 Chrome/Edge」逐个探测**实际存在的文件**，用绝对路径启动，不再依赖环境变量。
 
+### 3.3 189.cn 打不开：反自动化标记被识别
+
+**现象**：在自动化浏览器里打开 `https://www.189.cn/`，页面一片空白，正文长度为 0；同一个网址在日常浏览器里正常打开。
+
+**实测对照（2026-11-20）**：
+
+| 启动方式 | 结果 |
+|---|---|
+| 系统 Chrome + 原有启动参数 | 正文 0 字，html 仅 39 字符 |
+| 系统 Chrome + 不带任何参数 | 正文 0 字，html 仅 39 字符 |
+| 系统 Chrome + `--disable-blink-features=AutomationControlled` | 正文 1186 字，跳转到 `/web/`，出现「账户余额」等业务文案 |
+
+**根因**：Playwright 默认把 `navigator.webdriver` 置为 `true`，189.cn 据此判定为自动化客户端，直接返回空页面。与无头模式、sandbox 参数都无关。
+
+**修复**：`BROWSER_ARGS` 增加 `--disable-blink-features=AutomationControlled`。登录脚本与巡检服务共用这一组参数，两边行为一致。
+
+### 3.4 运营商登录判定：不能只看标签是否出现
+
+189.cn **未登录**的首页文本里就有「账户余额」，只是值为占位符 `--`：
+
+```
+中国电信欢迎你 登录 手机 宽带 固话 -- 账户余额 -- 已用通用流量 -- 剩余积分 充值…
+```
+
+若登录检测只看「标签是否出现」，会把未登录页面误判成已登录，导出一份无效登录态——表面登录成功，后续巡检却永远抓不到余额。
+
+现用 `detectCarrierLoggedIn()`，满足任一条才算已登录：
+
+1. 页面出现登录后专属文案「退出登录 / 退出」（未登录态实测出现次数为 0）；
+2. 余额标签后紧跟真实数字（占位符 `--` 不算；标签与数字之间夹了其他中文标签也不算）。
+
+相关回归用例在 `scripts/test-carrier-balance.mjs`（49 项）。
+
 ## 4. 配置与环境变量
 
 | 变量 | 必填 | 说明（不含秘密） |
