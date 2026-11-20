@@ -76,17 +76,22 @@ node scripts/test-carrier-balance.mjs     # 运营商解析单元测试（41 项
 npm run dev
 ```
 
-实测结果（本次改动后）：
+实测结果（2026-11-20 最新）：
 
-- `npm test` → 37 项全部通过，exit 0（新增 6 项运营商端到端用例：登录态检测、未登录时刷新返回结构化失败、错误提示指向登录脚本、抓取失败不生成充值单、不写入余额历史）
-- `node scripts/test-carrier-balance.mjs` → 41 项全部通过，exit 0
-- **中国移动真实抓取已联调通过**（2026-11-20）：
+- `npm test` → 37 项全部通过，exit 0（含 6 项运营商端到端用例：登录态检测、未登录时刷新返回结构化失败、错误提示指向登录脚本、抓取失败不生成充值单、不写入余额历史）
+- `node scripts/test-carrier-balance.mjs` → 56 项全部通过，exit 0
+- **中国移动真实抓取已联调通过**：
   - 登录：`node scripts/wallet-login.mjs carrier_cmcc` → 短信随机码登录 → 登录态保存到 `src/wallet-states/storage_carrier_cmcc.json`
   - 抓取：`node scripts/wallet-check.mjs 中国移动话费` → `OK 中国移动话费 : 70.9`
   - 与网厅页面显示的「可用余额： 70.90元」一致
-- **服务巡检链路已验证通过**：隔离端口实例触发运营商平台刷新 → `POST /api/platforms/:id/refresh` 返回 `{"ok":true,"balance":70.9,"platformId":"5"}`，`latest_balance=70.9`、`latest_error=null`、余额历史写入 2 条（说明 `fetchBalance → scrapeCarrier → 落库` 全链路通）
-- **真实服务实例上验证通过**（重启加载新代码后）：巡检日志 `[refresh] 获取余额成功: balance=70.9`、`[monitor] 刷新 2 平台, 生成 0 充值单, 到账 0, 错误 0`；页面平台表显示「中国移动话费 / 中国移动个人卡 / 70.9 CNY / 阈值 20 / 充值 100 / 启用 / 登录」
-- 中国电信、中国联通**仍未联调**：需你本人完成一次网厅登录（电信受反爬限制，还需桌面 Chrome 调试模式）
+  - 注意：移动登录态有效期较短（实测约 30 分钟内有效），过期后需重新登录；过期表现是跳转到 `login.10086.cn`
+- **中国电信真实抓取已联调通过**：
+  - 登录：`node scripts/wallet-login.mjs carrier_ct` → 登录态保存到 `src/wallet-states/storage_carrier_ct.json`
+  - 抓取：`node scripts/wallet-check.mjs 中国电信话费` → `OK 中国电信话费 : 54.61`
+  - 与网厅首页显示的「账户余额 54.61元」一致
+  - 该站需有头窗口抓取（见 §3.3），巡检时会短暂弹出 Chrome 窗口
+- **服务巡检全链路已验证**：重启加载新代码后，巡检日志 `[monitor 15:00:51] 刷新 3 平台, 生成 0 充值单, 到账 0, 错误 0`，三家余额全部落库（DeepSeek 9.11 / 中国移动话费 70.9 / 中国电信话费 54.61），`latest_error` 均为 null
+- 中国联通**仍未联调**：需你本人完成一次网厅登录（`node scripts/wallet-login.mjs carrier_cu`）
 
 ### 3.1 两个必须知道的运维约束
 
