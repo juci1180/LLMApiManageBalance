@@ -191,7 +191,33 @@ try {
     && zd.json?.has_api_key === true && zd.json?.has_api_key_secret === true);
   await api('DELETE', `/api/platforms/${zid}`);
 
-  // ===== 8. 收尾：测试数据清零 =====
+  // ===== 8. 三大运营商个人卡（无登录态时的可读失败） =====
+  const cc = await api('POST', '/api/platforms', {
+    name: '运营商冒烟测试', provider: 'carrier_cmcc', balance_type: 'api',
+    balance_api_url: 'https://www.10086.cn/', currency: 'CNY', threshold: 20, recharge_amount: 100,
+  });
+  check('创建运营商平台', cc.ok && Number.isFinite(cc.json?.id), `id=${cc.json?.id}`);
+  const cid = cc.json.id;
+
+  const cLogin = await api('GET', `/api/platforms/${cid}/login-state`);
+  check('运营商平台登录态检测接口可用', cLogin.ok && cLogin.json?.exists === false && cLogin.json?.key === 'carrier_cmcc',
+    `exists=${cLogin.json?.exists} key=${cLogin.json?.key}`);
+
+  const cRefresh = await api('POST', `/api/platforms/${cid}/refresh`);
+  check('未登录时刷新返回结构化失败（不是 500）', cRefresh.json?.ok === false, JSON.stringify(cRefresh.json || {}).slice(0, 120));
+  check('未登录错误提示可读且指向登录脚本',
+    typeof cRefresh.json?.error === 'string' && cRefresh.json.error.includes('wallet-login.mjs') && cRefresh.json.error.includes('carrier_cmcc'),
+    String(cRefresh.json?.error || '').slice(0, 80));
+
+  const cOrders = (await api('GET', '/api/orders')).json?.filter((o) => o.platform_id === cid);
+  check('抓取失败不生成充值单', Array.isArray(cOrders) && cOrders.length === 0, `len=${cOrders?.length}`);
+
+  const cHist = await api('GET', `/api/platforms/${cid}/history`);
+  check('抓取失败不写入余额历史', cHist.ok && Array.isArray(cHist.json) && cHist.json.length === 0, `len=${cHist.json?.length}`);
+
+  await api('DELETE', `/api/platforms/${cid}`);
+
+  // ===== 9. 收尾：测试数据清零 =====
   const fin = await api('GET', '/api/platforms');
   check('测试平台全部清理', Array.isArray(fin.json) && fin.json.length === 0, `len=${fin.json?.length}`);
 
