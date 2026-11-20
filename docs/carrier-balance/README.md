@@ -85,7 +85,25 @@ npm run dev
   - 抓取：`node scripts/wallet-check.mjs 中国移动话费` → `OK 中国移动话费 : 70.9`
   - 与网厅页面显示的「可用余额： 70.90元」一致
 - **服务巡检链路已验证通过**：隔离端口实例触发运营商平台刷新 → `POST /api/platforms/:id/refresh` 返回 `{"ok":true,"balance":70.9,"platformId":"5"}`，`latest_balance=70.9`、`latest_error=null`、余额历史写入 2 条（说明 `fetchBalance → scrapeCarrier → 落库` 全链路通）
+- **真实服务实例上验证通过**（重启加载新代码后）：巡检日志 `[refresh] 获取余额成功: balance=70.9`、`[monitor] 刷新 2 平台, 生成 0 充值单, 到账 0, 错误 0`；页面平台表显示「中国移动话费 / 中国移动个人卡 / 70.9 CNY / 阈值 20 / 充值 100 / 启用 / 登录」
 - 中国电信、中国联通**仍未联调**：需你本人完成一次网厅登录（电信受反爬限制，还需桌面 Chrome 调试模式）
+
+### 3.1 两个必须知道的运维约束
+
+**服务要用新代码必须重启。** 服务由 `启动项.bat` 以 `node src/server.js` 启动（无 watch），改了代码不会热重载。运营商查询器是新加的，旧进程里没有，刷新会按通用 API 去请求网厅首页拿到 HTML，报 `Unexpected token '<'`。
+
+**写数据库要走服务，不能直接改文件。** 服务用 sql.js，数据库整个读进内存、每次写操作把全库覆盖写回文件。因此「服务运行中」时直接改 `src/data/llm-manager.db` 会被服务的下一次落盘抹掉（本次就因此丢过电信、联通两条记录）。`scripts/setup-carrier-platforms.mjs` 已改为自动判断：服务在跑就走 HTTP API 写入，服务没跑才直接改文件。
+
+```bash
+node scripts/setup-carrier-platforms.mjs            # 三家
+node scripts/setup-carrier-platforms.mjs --only cmcc # 只加一家
+```
+
+### 3.2 浏览器可执行文件的定位
+
+Playwright 的 `chromium.executablePath()` 依赖 `PLAYWRIGHT_BROWSERS_PATH` 环境变量。登录脚本与巡检服务是两个进程，环境不同：服务由 `启动项.bat` 拉起时不继承该变量，会指向默认 `ms-playwright` 目录——那里通常没装浏览器，报 `Executable doesn't exist`。
+
+代码已改为 `resolveBrowserExecutable()`：按「Playwright 自带 chromium → `PLAYWRIGHT_BROWSERS_PATH` 下的 `chromium-*/chrome-win64/chrome.exe` → 系统安装的 Chrome/Edge」逐个探测**实际存在的文件**，用绝对路径启动，不再依赖环境变量。
 
 ## 4. 配置与环境变量
 
@@ -93,6 +111,7 @@ npm run dev
 |---|---|---|
 | LLM_MANAGER_PORT | 否 | 服务端口，默认见 `scripts/port.mjs` |
 | LLM_MANAGER_DATA_DIR | 否 | 数据库目录，默认 `src/data/` |
+| LLM_MANAGER_WALLET_STATE_DIR | 否 | 登录态文件目录，默认 `src/wallet-states/`。测试用它指向临时目录，避免开发机真实登录态影响断言 |
 
 平台级配置（在页面「编辑」里改）：
 
