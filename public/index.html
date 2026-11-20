@@ -214,6 +214,15 @@
     function isCarrier(provider) {
       return String(provider || '').startsWith('carrier_');
     }
+    // provider 列显示：运营商用中文名，其余显示原值
+    const CARRIER_LABELS = {
+      carrier_cmcc: '中国移动个人卡',
+      carrier_ct: '中国电信个人卡',
+      carrier_cu: '中国联通个人卡',
+    };
+    function providerLabel(p) {
+      return CARRIER_LABELS[p.provider] || esc(p.provider);
+    }
     function iconFor(p) {
       const key = (p.provider || '').toLowerCase();
       if (ICONS[key]) return ICONS[key];
@@ -264,15 +273,15 @@
       // ===== 三大运营商个人卡（手机 SIM 卡）=====
       // 运营商没有面向个人开放的查余额 API，这里走网上营业厅页面抓取：
       // 首次需运行 node scripts/wallet-login.mjs 登录一次网厅，之后定时巡检自动读余额
-      { provider:'carrier_cmcc', name:'中国移动话费', balanceType:'api', currency:'CNY', threshold:20,
+      { provider:'carrier_cmcc', name:'中国移动话费', balanceType:'api', group:'scrape', currency:'CNY', threshold:20, rechargeAmount:100,
         url:'https://shop.10086.cn/i/?f=home',
-        hint:'手机卡话费余额：无需 API Key，登录中国移动网上营业厅读取「账户余额」。首次需运行 <code>node scripts/wallet-login.mjs carrier_cmcc</code> 登录一次（需服务密码或短信验证码）。' },
-      { provider:'carrier_ct', name:'中国电信话费', balanceType:'api', currency:'CNY', threshold:20,
+        hint:'手机卡话费余额：<b>无需 API Key</b>，登录中国移动网上营业厅读取「账户余额」。首次需运行 <code>node scripts/wallet-login.mjs carrier_cmcc</code> 登录一次（需服务密码或短信验证码）。' },
+      { provider:'carrier_ct', name:'中国电信话费', balanceType:'api', group:'scrape', currency:'CNY', threshold:20, rechargeAmount:100,
         url:'https://www.189.cn/',
-        hint:'手机卡话费余额：无需 API Key，登录中国电信网上营业厅读取「账户余额」。首次需运行 <code>node scripts/wallet-login.mjs carrier_ct</code> 登录一次（需服务密码或短信验证码）。' },
-      { provider:'carrier_cu', name:'中国联通话费', balanceType:'api', currency:'CNY', threshold:20,
+        hint:'手机卡话费余额：<b>无需 API Key</b>，登录中国电信网上营业厅读取「账户余额」。首次需运行 <code>node scripts/wallet-login.mjs carrier_ct</code> 登录一次（需服务密码或短信验证码）。' },
+      { provider:'carrier_cu', name:'中国联通话费', balanceType:'api', group:'scrape', currency:'CNY', threshold:20, rechargeAmount:100,
         url:'https://www.10010.com/',
-        hint:'手机卡话费余额：无需 API Key，登录中国联通网上营业厅读取「账户余额」。首次需运行 <code>node scripts/wallet-login.mjs carrier_cu</code> 登录一次（需服务密码或短信验证码）。' },
+        hint:'手机卡话费余额：<b>无需 API Key</b>，登录中国联通网上营业厅读取「账户余额」。首次需运行 <code>node scripts/wallet-login.mjs carrier_cu</code> 登录一次（需服务密码或短信验证码）。' },
     ];
 
     function renderQuickAdd() {
@@ -286,7 +295,9 @@
         btn.style.cssText = 'display:inline-flex;align-items:center;gap:6px;border:1px solid #d1d5db;border-radius:6px;background:#fff;padding:4px 10px;cursor:pointer;font-size:13px;';
         btn.innerHTML = `${iconFor(t)}<span>${t.name}</span>`;
         btn.onclick = () => showQuickForm(t);
-        const bar = (t.balanceType === 'scrape') ? scrapeBar : apiBar;
+        // 分组：运营商虽然 balance_type=api（靠 provider 走专用查询器），
+        // 但用户无需填 API Key、需先登录网厅，语义上属“浏览器抓取型”，放第二组
+        const bar = ((t.group || (t.balanceType === 'scrape')) ? scrapeBar : apiBar);
         (bar || apiBar).appendChild(btn);
       }
     }
@@ -348,7 +359,7 @@
       document.querySelector('#f-json-path').value = t.jsonPath || '';
       document.querySelector('#f-currency').value = t.currency;
       document.querySelector('#f-threshold').value = t.threshold;
-      document.querySelector('#f-recharge').value = '500';
+      document.querySelector('#f-recharge').value = String(t.rechargeAmount ?? 500);
       document.querySelector('#f-target').value = '';
       applyFieldVisibility(t.provider);
       onBalanceTypeChange();
@@ -403,7 +414,7 @@
         return `
         <tr${isLow ? ' class="low-balance"' : ''}>
           <td><span class="pname">${iconFor(p)}<b>${esc(p.name)}</b></span></td>
-          <td>${esc(p.provider)}</td>
+          <td>${providerLabel(p)}</td>
           <td>${balanceBadge(p.latest_balance, p.threshold)} ${esc(p.currency)}</td>
           <td>${p.threshold}</td>
           <td>${p.recharge_amount}</td>

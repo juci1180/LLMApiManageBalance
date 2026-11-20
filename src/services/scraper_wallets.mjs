@@ -283,7 +283,9 @@ async function waitForKeyword(page, keyword, { waitKeywordMs = 30000 } = {}) {
 // 登录态文件目录（storageState 导出，参照 E:\ai-wallet-monitor-portable 方案）：
 // 运行 scripts/wallet-login.mjs 登录后自动导出到 src/wallet-states/storage_<key>.json，
 // 巡检时无头浏览器加载该文件注入登录态，无需保持桌面 Chrome 打开。
-export const STORAGE_DIR = path.join(__dirname, '..', 'wallet-states');
+// LLM_MANAGER_WALLET_STATE_DIR 可覆盖目录（测试隔离用，避免依赖开发机上的真实登录态）。
+export const STORAGE_DIR = process.env.LLM_MANAGER_WALLET_STATE_DIR
+  || path.join(__dirname, '..', 'wallet-states');
 
 // 平台名 → 登录态文件 key 的映射（与 wallet-login.mjs / setup-wallet-platforms.mjs 一致）
 // 兼容新简称（腾讯云/MIMO/Kimi/阿里云）与旧全称
@@ -323,6 +325,60 @@ export const BROWSER_ARGS = [
   '--disable-setuid-sandbox',
   '--disable-features=DeviceBoundSessions,DeviceBoundSessionsV2',
 ];
+
+// 定位可用的浏览器可执行文件。
+// 为什么不能直接用 chromium.executablePath()：它返回的路径取决于 PLAYWRIGHT_BROWSERS_PATH
+// 环境变量，而服务进程（由启动项.bat 拉起）不一定继承到该变量，会指向默认的
+// ms-playwright 目录——那里往往没有安装，报 "Executable doesn't exist"。
+// 登录脚本与巡检服务是两个进程，环境不同，必须按「实际存在的文件」来挑。
+const SYSTEM_CHROME_PATHS = [
+  'C:/Program Files/Google/Chrome/Application/chrome.exe',
+  'C:/Program Files (x86)/Google/Chrome/Application/chrome.exe',
+  'C:/Program Files/Microsoft/Edge/Application/msedge.exe',
+  'C:/Program Files (x86)/Microsoft/Edge/Application/msedge.exe',
+];
+
+let cachedExecutable = null;
+
+// 返回可用的浏览器可执行文件路径；找不到返回 null
+export function resolveBrowserExecutable() {
+  if (cachedExecutable) return cachedExecutable;
+  const candidates = [];
+  // 1) Playwright 自带的 chromium（若环境变量指向已安装位置）
+  try {
+    const p = chromium.executablePath();
+    if (p) candidates.push(p);
+  } catch { /* 未安装时抛错，忽略 */ }
+  // 2) PLAYWRIGHT_BROWSERS_PATH 下的 chromium-*/chrome-win64/chrome.exe
+  const browsersPath = process.env.PLAYWRIGHT_BROWSERS_PATH;
+  if (browsersPath) {
+    for (const dir of fs.existsSync(browsersPath) ? fs.readdirSync(browsersPath) : []) {
+      if (!dir.startsWith('chromium')) continue;
+      candidates.push(path.join(browsersPath, dir, 'chrome-win64', 'chrome.exe'));
+    }
+  }
+  // 3) 系统安装的 Chrome / Edge
+  candidates.push(...SYSTEM_CHROME_PATHS);
+  for (const c of candidates) {
+    try {
+      if (c && fs.existsSync(c)) {
+        cachedExecutable = c;
+        return c;
+      }
+    } catch { /* 忽略探测异常 */ }
+  }
+  return null;
+}
+
+// 统一的启动选项：能定位到可执行文件就用绝对路径（不依赖环境变量），
+// 定位不到则退回 channel（playwright 自带下载的浏览器）
+function launchOptions(extra = {}) {
+  const exe = resolveBrowserExecutable();
+  return {
+    ...(exe ? { executablePath: exe } : { channel: 'chromium' }),
+    ...extra,
+  };
+}
 
 // 按可见文字点击页面元素（网厅菜单入口），成功返回 true
 // 先按精确文字找（避免点到同义栏目），找不到再退回模糊匹配
@@ -393,7 +449,7 @@ const HEADLESS_CONTEXT_OPTIONS = {
 
 // 用登录态文件（storageState）无头抓取单平台
 async function scrapeWithStorage(storageFile, { url, rule, debugLabel, waitMs }) {
-  const browser = await chromium.launch({ headless: true, channel: 'chromium' });
+  const browser = await chromium.launch(launchOptions({ headless: true }));
   try {
     const context = await browser.newContext({ storageState: storageFile, ...HEADLESS_CONTEXT_OPTIONS });
     const page = await context.newPage();
@@ -450,14 +506,13 @@ export async function scrapeWalletBalance({ url, rule, debugLabel = '平台', he
   }
 
   fs.mkdirSync(PROFILE_DIR, { recursive: true });
-  const browser = await chromium.launchPersistentContext(PROFILE_DIR, {
+  const browser = await chromium.launchPersistentContext(PROFILE_DIR, launchOptions({
     headless,
     // 用完整版 Chrome（Chrome for Testing）的无头模式，与登录脚本同一二进制，
     // 避免 headless shell 与完整版之间登录态读取不一致的问题
-    channel: 'chromium',
     viewport: { width: 1920, height: 1080 },
     args: BROWSER_ARGS,
-  });
+  }));
   let page;
   try {
     page = await browser.newPage();
@@ -487,7 +542,7 @@ export async function scrapeWalletsBatch(tasks) {
   const results = [];
   const withStorage = tasks.filter((t) => t.storageFile);
   if (withStorage.length) {
-    const browser = await chromium.launch({ headless: true });
+    const browser = await chromium.launch(launchOptions({ headless: true }));
     try {
       for (const t of withStorage) {
         const context = await browser.newContext({ storageState: t.storageFile, viewport: { width: 1280, height: 900 } });

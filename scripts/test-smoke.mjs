@@ -47,8 +47,11 @@ const base = `http://127.0.0.1:${port}`;
 const dbDir = mkdtempSync(join(tmpdir(), 'llm-smoke-'));
 
 // 测试实例环境变量：隔离端口 + 隔离数据库 + 关闭桌面弹窗
+// 登录态目录也隔离：否则开发机上真实存在的登录态文件会让「未登录」用例失真
+const walletStateDir = mkdtempSync(join(tmpdir(), 'llm-smoke-wallet-'));
 process.env.LLM_MANAGER_PORT = String(port);
 process.env.LLM_MANAGER_DATA_DIR = dbDir;
+process.env.LLM_MANAGER_WALLET_STATE_DIR = walletStateDir;
 process.env.LLM_MANAGER_NO_DESKTOP_ALERT = '1';
 
 console.log(`测试实例：${base}（数据库 ${dbDir}）\n`);
