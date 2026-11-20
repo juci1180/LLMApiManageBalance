@@ -72,6 +72,7 @@ export async function initSchema() {
       notified_at TEXT,
       paid_at TEXT,
       credited_at TEXT,
+      balance_at_paid REAL,
       note TEXT
     );
 
@@ -107,6 +108,15 @@ export async function initSchema() {
     // 迁移：最近一次刷新错误（抓取失败/登录态过期提示用）
     if (!names.includes('latest_error')) {
       db.run('ALTER TABLE platforms ADD COLUMN latest_error TEXT');
+    }
+  } catch {}
+
+  // 迁移：充值单登记打款时的余额快照（到账检测的基准线）
+  try {
+    const oCols = db.exec('PRAGMA table_info(recharge_orders)');
+    const oNames = oCols.length ? oCols[0].values.map((r) => r[1]) : [];
+    if (!oNames.includes('balance_at_paid')) {
+      db.run('ALTER TABLE recharge_orders ADD COLUMN balance_at_paid REAL');
     }
   } catch {}
 

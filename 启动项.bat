@@ -1,6 +1,7 @@
 @echo off
 title AI 钱包余额监控 - 启动项
-cd /d E:\XKZOOM\LLMApiManageBalance
+cd /d "%~dp0"
+for /f "delims=" %%p in ('node scripts\port.mjs') do set "PORT=%%p"
 
 :menu
 cls
@@ -22,20 +23,20 @@ goto menu
 
 :start
 echo 正在检查监控服务...
-powershell -NoProfile -Command "try { $r=Invoke-WebRequest -Uri 'http://localhost:3000' -UseBasicParsing -TimeoutSec 3; exit 0 } catch { exit 1 }" >nul 2>nul
+powershell -NoProfile -Command "try { $r=Invoke-WebRequest -Uri 'http://localhost:%PORT%' -UseBasicParsing -TimeoutSec 3; exit 0 } catch { exit 1 }" >nul 2>nul
 if %errorlevel%==0 (
   echo 监控服务已在运行，打开汇总页。
-  start http://localhost:3000
+  start http://localhost:%PORT%
   pause
   goto menu
 )
 echo 正在启动监控服务...
-start "AI钱包余额监控" /min D:\node\node.exe src\server.js
+start "AI钱包余额监控" /min node src\server.js
 echo 等待服务就绪...
-powershell -NoProfile -Command "for($i=0;$i -lt 30;$i++){ try { $r=Invoke-WebRequest -Uri 'http://localhost:3000' -UseBasicParsing -TimeoutSec 2; exit 0 } catch { Start-Sleep -Seconds 1 } } ; exit 1" >nul 2>nul
+powershell -NoProfile -Command "for($i=0;$i -lt 30;$i++){ try { $r=Invoke-WebRequest -Uri 'http://localhost:%PORT%' -UseBasicParsing -TimeoutSec 2; exit 0 } catch { Start-Sleep -Seconds 1 } } ; exit 1" >nul 2>nul
 if %errorlevel%==0 (
-  echo 服务已就绪：http://localhost:3000
-  start http://localhost:3000
+  echo 服务已就绪：http://localhost:%PORT%
+  start http://localhost:%PORT%
 ) else (
   echo 服务启动失败或超时，请稍后重试。
 )
@@ -43,6 +44,6 @@ pause
 goto menu
 
 :summary
-start http://localhost:3000
+start http://localhost:%PORT%
 pause
 goto menu

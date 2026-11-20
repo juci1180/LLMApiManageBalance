@@ -18,6 +18,18 @@ const LOGIN_LOG = join(PROJECT_ROOT, 'src', 'wallet-states', 'login-run.log');
 
 let loginRunning = false;
 
+// 校验数值型字段（阈值/充值金额/补足目标）：
+// 这些值会直接插入前端 HTML，必须保证是有限数字，否则可被写入非数值字符串
+function validateNumericFields(b) {
+  for (const k of ['threshold', 'recharge_amount', 'target_amount']) {
+    if (b[k] === undefined || b[k] === null || b[k] === '') continue;
+    if (!Number.isFinite(Number(b[k]))) return `${k} 必须是有效数值`;
+  }
+  if (b.threshold !== undefined && Number(b.threshold) < 0) return 'threshold 不能为负数';
+  if (b.recharge_amount !== undefined && Number(b.recharge_amount) < 0) return 'recharge_amount 不能为负数';
+  return null;
+}
+
 // 平台 → 登录态文件 key（与 wallet-login.mjs 的转换一致）
 function storageKeyFor(platform) {
   return STORAGE_KEY_BY_NAME[platform.name] || platform.provider || platform.name;
@@ -90,13 +102,24 @@ export async function registerRoutes(fastify) {
     });
   });
 
-  fastify.get('/api/platforms/:id', async (req) => {
-    return db.prepare('SELECT * FROM platforms WHERE id = ?').get(req.params.id);
+  // 单个平台详情：密钥掩码返回（与列表接口一致），另给出是否已配置标记供前端提示
+  fastify.get('/api/platforms/:id', async (req, reply) => {
+    const p = db.prepare('SELECT * FROM platforms WHERE id = ?').get(req.params.id);
+    if (!p) return reply.code(404).send({ error: '平台不存在' });
+    return {
+      ...p,
+      api_key: p.api_key ? '••••••••' : '',
+      api_key_secret: p.api_key_secret ? '••••••••' : '',
+      has_api_key: Boolean(p.api_key),
+      has_api_key_secret: Boolean(p.api_key_secret),
+    };
   });
 
   fastify.post('/api/platforms', async (req, reply) => {
     const b = req.body || {};
     if (!b.name) return reply.code(400).send({ error: 'name 必填' });
+    const bad = validateNumericFields(b);
+    if (bad) return reply.code(400).send({ error: bad });
     try {
       const info = db.prepare(`
         INSERT INTO platforms (name, provider, base_url, api_key, api_key_secret, balance_type, balance_api_url,
@@ -119,6 +142,8 @@ export async function registerRoutes(fastify) {
     const b = req.body || {};
     const existing = db.prepare('SELECT * FROM platforms WHERE id = ?').get(id);
     if (!existing) return reply.code(404).send({ error: '平台不存在' });
+    const bad = validateNumericFields(b);
+    if (bad) return reply.code(400).send({ error: bad });
     const apiKey = b.api_key === undefined ? existing.api_key : b.api_key;
     const apiKeySecret = b.api_key_secret === undefined ? existing.api_key_secret : b.api_key_secret;
     db.prepare(`
@@ -136,26 +161,39 @@ export async function registerRoutes(fastify) {
     return { ok: true };
   });
 
+  // 删除平台：连带清理其余额历史与充值单
+  // （sqlite 未开启 foreign_keys，ON DELETE CASCADE 不生效，必须显式清理）
   fastify.delete('/api/platforms/:id', async (req) => {
-    db.prepare('DELETE FROM platforms WHERE id = ?').run(req.params.id);
+    const id = req.params.id;
+    db.prepare('DELETE FROM balance_history WHERE platform_id = ?').run(id);
+    db.prepare('DELETE FROM recharge_orders WHERE platform_id = ?').run(id);
+    db.prepare('DELETE FROM platforms WHERE id = ?').run(id);
     return { ok: true };
   });
 
   // 手动刷新单个平台余额
   fastify.post('/api/platforms/:id/refresh', async (req, reply) => {
-    const r = await refreshPlatformBalance(req.params.id);
-    if (!r.ok) return reply.code(500).send(r);
+    let r;
+    try {
+      r = await refreshPlatformBalance(req.params.id);
+    } catch (err) {
+      return reply.code(404).send({ error: err.message });
+    }
+    if (!r || !r.ok) return reply.code(500).send(r || { error: '刷新失败' });
     return r;
   });
 
   // 手动录入余额
   fastify.post('/api/platforms/:id/balance', async (req, reply) => {
     const { balance } = req.body || {};
-    if (balance == null) return reply.code(400).send({ error: 'balance 必填' });
+    const num = Number(balance);
+    if (balance == null || !Number.isFinite(num)) {
+      return reply.code(400).send({ error: 'balance 必须是有效数值' });
+    }
     const p = db.prepare('SELECT * FROM platforms WHERE id = ?').get(req.params.id);
     if (!p) return reply.code(404).send({ error: '平台不存在' });
     db.prepare('INSERT INTO balance_history (platform_id, balance, currency) VALUES (?, ?, ?)')
-      .run(p.id, balance, p.currency);
+      .run(p.id, num, p.currency);
     return { ok: true };
   });
 
@@ -219,7 +257,12 @@ export async function registerRoutes(fastify) {
   fastify.get('/api/fund', async () => {
     const pool = getFundPool();
     const txs = db.prepare('SELECT * FROM fund_transactions ORDER BY id DESC LIMIT 100').all();
-    return { pool, transactions: txs };
+    // 累计充值总额：以到账流水为准（资金池余额是公司台账口径，充值时是扣减，不能直接当累计额展示）
+    const agg = db.prepare(`
+      SELECT COALESCE(SUM(ABS(amount)), 0) AS total FROM fund_transactions
+      WHERE type IN ('recharge', 'recharge_deduct')
+    `).get();
+    return { pool, total_recharged: agg?.total ?? 0, transactions: txs };
   });
 
   // 月度充值统计：某月各平台到账明细（status=credited 的记录）

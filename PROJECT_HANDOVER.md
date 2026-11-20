@@ -19,7 +19,7 @@
 |---|---|---|
 | 运行时 | Node.js ≥ 20 | ES Module（`"type": "module"`） |
 | Web 框架 | Fastify 5 | 启动快、内置 JSON 序列化 |
-| 数据库 | sql.js（SQLite WASM） | 纯 JS 实现，无需原生编译，数据库文件在 `data/llm-manager.db` |
+| 数据库 | sql.js（SQLite WASM） | 纯 JS 实现，无需原生编译，数据库文件在 `src/data/llm-manager.db` |
 | 浏览器抓取 | Playwright | 登录态（storageState）复用，无头抓取钱包页余额 |
 | 前端 | 原生 HTML/JS/CSS | 单文件 `public/index.html`，零构建零依赖 |
 
@@ -143,7 +143,7 @@ npm run dev
 - 智谱没有官方余额 API，用的是控制台内部接口
 - `api_key_secret` 存的是控制台登录 JWT Token（不是模型 API Key）
 - Token 会过期，过期后需重新登录 `open.bigmodel.cn`，从浏览器 DevTools 的 Authorization 头复制新 Token
-- 可运行 `node scripts/zhipu-token-refresh.mjs --token "新token"` 更新
+- 可运行 `node scripts/zhipu-token-refresh.mjs --token "新token"` 更新（脚本按平台名称自动定位智谱平台，不依赖固定 id；多平台同名时用 `--platform "智谱AI"` 指定）
 
 ---
 
@@ -184,7 +184,7 @@ pending（待通知）→ notified（已通知）→ paid（已打款）→ cred
 | 方法 | 路径 | 说明 |
 |---|---|---|
 | GET | `/api/platforms` | 平台列表（密钥掩码，附最新余额） |
-| GET | `/api/platforms/:id` | 单个平台详情（含真实密钥） |
+| GET | `/api/platforms/:id` | 单个平台详情（密钥掩码，另给 `has_api_key` / `has_api_key_secret` 标记） |
 | POST | `/api/platforms` | 添加平台 |
 | PUT | `/api/platforms/:id` | 更新平台 |
 | DELETE | `/api/platforms/:id` | 删除平台 |
@@ -198,7 +198,7 @@ pending（待通知）→ notified（已通知）→ paid（已打款）→ cred
 | POST | `/api/orders/:id/credit` | 检测到账（自动） |
 | POST | `/api/orders/:id/credit-force` | 手动确认到账 |
 | POST | `/api/orders/:id/note` | 修改用途备注 |
-| GET | `/api/fund` | 资金统计 + 流水 |
+| GET | `/api/fund` | 资金统计 + 流水（含 `total_recharged` 累计充值总额） |
 | GET | `/api/fund/monthly?month=YYYY-MM` | 月度充值明细（各平台到账汇总） |
 | POST | `/api/monitor/run` | 立即执行一次巡检 |
 
@@ -214,7 +214,7 @@ xkzoom-apiManager/
 │   ├── db/
 │   │   └── index.js           # 数据库模块（sql.js 封装，兼容 better-sqlite3 接口）
 │   └── services/
-│       ├── balance.js         # 余额查询（8 个内置 provider + generic + manual）
+│       ├── balance.js         # 余额查询（内置 provider + generic + scrape + manual）
 │       ├── recharge.js        # 充值自动化（生成单 → 通知 → 打款 → 到账 → 记账）
 │       ├── monitor.js         # 监控调度器（定时巡检循环，平台并行抓取）
 │       ├── mailer.js          # 邮件模块（遗留，未配置 SMTP 时跳过）
@@ -242,7 +242,7 @@ platforms          平台面板（name, provider, api_key, api_key_secret, balan
 balance_history     余额历史（platform_id, balance, currency, checked_at）
 
 recharge_orders     充值单（platform_id, amount, currency, reason, status, 
-                   notified_at, paid_at, credited_at）
+                   notified_at, paid_at, credited_at, balance_at_paid）
 
 fund_pool           资金统计（累计充值，balance 单行；充值提醒到账时累加）
 
@@ -255,7 +255,7 @@ settings            键值设置（预留）
 
 ## 十、安全注意事项
 
-1. **密钥存储在数据库中**（`data/llm-manager.db`），API 列表接口返回掩码 `••••••••`
+1. **密钥存储在数据库中**（`src/data/llm-manager.db`），列表接口与详情接口均返回掩码 `••••••••`
 2. **`.gitignore` 已配置**忽略数据库、config 目录、.env 文件
 3. **交付前脱敏**：运行 `node scripts/sanitize-db.mjs` 清空所有密钥
 4. **无身份认证**：当前版本没有登录/鉴权，部署时需：
@@ -272,7 +272,7 @@ settings            键值设置（预留）
 A: 先跑 `npm install` 安装依赖。
 
 **Q: 数据库在哪？**
-A: `data/llm-manager.db`，首次启动自动创建。删掉后重启会重新建空库（平台配置、充值记录会丢）。
+A: `src/data/llm-manager.db`，首次启动自动创建。删掉后重启会重新建空库（平台配置、充值记录会丢）。
 
 **Q: OpenAI 余额显示 0？**
 A: OpenAI 用「预付额 - 本月消耗」算余额。`balance_json_path` 字段填预付总额（美元）。确认 Admin Key 有效且配了出境代理。

@@ -13,7 +13,7 @@ try {
   config = JSON.parse(readFileSync(join(__dirname, '..', '..', 'config.json'), 'utf-8'));
 } catch {}
 
-const intervalMs = config.monitor?.intervalMs ?? 600000;
+const intervalMs = config.monitor?.intervalMs ?? 3600000; // 默认 1 小时（与 README 一致）
 
 // 巡检并发保护：定时巡检与手动"立即巡检"同时触发时，后者直接跳过（避免重复抓取/重复建单）
 let cycleRunning = false;

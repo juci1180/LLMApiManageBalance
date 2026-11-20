@@ -93,11 +93,20 @@ export async function notifyOrder(orderId) {
   return { ok: sent, orderId };
 }
 
-// 财务确认已打款
+// 财务确认已打款：记录登记时的余额快照，作为后续到账检测的基准线
 export function markPaid(orderId) {
-  db.prepare(
-    "UPDATE recharge_orders SET status = 'paid', paid_at = datetime('now','localtime') WHERE id = ? AND status = 'notified'"
-  ).run(orderId);
+  const order = db.prepare('SELECT * FROM recharge_orders WHERE id = ?').get(orderId);
+  if (!order || order.status !== 'notified') return null;
+  // 打款时的最新余额（可能为空，检测时会回退到上一次巡检余额）
+  const latest = db.prepare(
+    'SELECT balance FROM balance_history WHERE platform_id = ? ORDER BY id DESC LIMIT 1'
+  ).get(order.platform_id);
+  const info = db.prepare(`
+    UPDATE recharge_orders
+    SET status = 'paid', paid_at = datetime('now','localtime'), balance_at_paid = ?
+    WHERE id = ? AND status = 'notified'
+  `).run(latest?.balance ?? null, orderId);
+  if (!info.changes) return null; // 状态已变（并发重复点击）
   return db.prepare('SELECT * FROM recharge_orders WHERE id = ?').get(orderId);
 }
 
@@ -113,13 +122,18 @@ export async function tryCreditOrder(orderId) {
   const r = await refreshPlatformBalance(order.pid);
   if (!r.ok || r.balance == null) return { ok: false, error: r.error };
 
-  // 打款前的最新余额
-  const before = db.prepare(
-    'SELECT balance FROM balance_history WHERE platform_id = ? AND id < (SELECT MAX(id) FROM balance_history WHERE platform_id = ?) ORDER BY id DESC LIMIT 1'
-  ).get(order.pid, order.pid);
+  // 打款时的余额基准：优先用登记打款时记录的快照（balance_at_paid）；
+  // 旧单据无快照时回退到上一次巡检的余额（排除本次刷新插入的最新一行）
+  let before = order.balance_at_paid;
+  if (before == null) {
+    const prev = db.prepare(
+      'SELECT balance FROM balance_history WHERE platform_id = ? AND id < (SELECT MAX(id) FROM balance_history WHERE platform_id = ?) ORDER BY id DESC LIMIT 1'
+    ).get(order.pid, order.pid);
+    before = prev?.balance ?? null;
+  }
 
   // 若余额相较打款时上升（粗略判断到账）
-  if (before && r.balance > before.balance + order.amount * 0.5) {
+  if (before != null && r.balance > before + order.amount * 0.5) {
     return creditOrder(orderId);
   }
   return { ok: false, reason: '尚未检测到到账' };

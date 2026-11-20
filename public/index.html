@@ -277,13 +277,11 @@
       moonshot:  { hide:['key-secret','balance-url','json-path'], keyLabel:'API Key <a href="https://platform.moonshot.cn/console/api-keys" target="_blank" rel="noopener noreferrer" style="font-size:12px;color:var(--brand);margin-left:4px;">查看帮助</a>' },
       minimax:   { hide:['key-secret','balance-url','json-path'], keyLabel:'Token Plan API Key <a href="https://platform.minimax.cn/console/access?tab=api-keys" target="_blank" rel="noopener noreferrer" style="font-size:12px;color:var(--brand);margin-left:4px;">查看帮助</a>' },
       mimo:      { hide:['key-secret','balance-url','json-path'], keyLabel:'API Key <a href="https://mimo.mi.com/console/access" target="_blank" rel="noopener noreferrer" style="font-size:12px;color:var(--brand);margin-left:4px;">查看帮助</a>' },
-      mimo:      { hide:['key-secret','balance-url','json-path'], keyLabel:'API Key <a href="https://mimo.mi.com/console/access" target="_blank" rel="noopener noreferrer" style="font-size:12px;color:var(--brand);margin-left:4px;">查看帮助</a>' },
       zhipu:     { hide:['balance-url','json-path'], keyLabel:'API Key（模型调用）<a href="https://open.bigmodel.cn/apikey/platform" target="_blank" rel="noopener noreferrer" style="font-size:12px;color:var(--brand);margin-left:4px;">查看帮助</a>', secretLabel:'控制台 Token（JWT）<a href="https://open.bigmodel.cn/" target="_blank" rel="noopener noreferrer" style="font-size:12px;color:var(--brand);margin-left:4px;">查看帮助</a>' },
       volcengine:{ hide:['balance-url','json-path'], keyLabel:'Access Key ID（AK）<a href="https://console.volcengine.com/iam/accesskey/" target="_blank" rel="noopener noreferrer" style="font-size:12px;color:var(--brand);margin-left:4px;">查看帮助</a>', secretLabel:'Secret Access Key（SK）<a href="https://console.volcengine.com/iam/accesskey/" target="_blank" rel="noopener noreferrer" style="font-size:12px;color:var(--brand);margin-left:4px;">查看帮助</a>' },
       dashscope: { hide:['balance-url','json-path'], keyLabel:'AccessKey ID<a href="https://ram.console.aliyun.com/manage/ak" target="_blank" rel="noopener noreferrer" style="font-size:12px;color:var(--brand);margin-left:4px;">查看帮助</a>', secretLabel:'AccessKey Secret<a href="https://ram.console.aliyun.com/manage/ak" target="_blank" rel="noopener noreferrer" style="font-size:12px;color:var(--brand);margin-left:4px;">查看帮助</a>' },
       tencent:   { hide:['balance-url','json-path'], keyLabel:'SecretId<a href="https://console.cloud.tencent.com/cam/capi" target="_blank" rel="noopener noreferrer" style="font-size:12px;color:var(--brand);margin-left:4px;">查看帮助</a>', secretLabel:'SecretKey<a href="https://console.cloud.tencent.com/cam/capi" target="_blank" rel="noopener noreferrer" style="font-size:12px;color:var(--brand);margin-left:4px;">查看帮助</a>' },
       openai:    { hide:['key-secret','balance-url','json-path'], keyLabel:'Admin Key（sk-admin 开头）<a href="https://platform.openai.com/api-keys" target="_blank" rel="noopener noreferrer" style="font-size:12px;color:var(--brand);margin-left:4px;">查看帮助</a>' },
-      zhipu:     { hide:['key-secret','balance-url','json-path'], keyLabel:'API Key <a href="https://open.bigmodel.cn/apikey/platform" target="_blank" rel="noopener noreferrer" style="font-size:12px;color:var(--brand);margin-left:4px;">查看帮助</a>' },
       scrape:    { hide:['key','key-secret'], keyLabel:'无需 API Key（浏览器登录抓取）', secretLabel:'无需 Secret Key' },
     };
     function setFieldVisible(name, visible) {
@@ -445,10 +443,12 @@
 
     async function loadFund() {
       const data = await api('/api/fund');
-      const txs = data.transactions || [];
-      // 累计充值 = 所有"充值到账"流水金额的绝对值之和（每笔确认到账自动记一条）
-      const total = txs.filter(t => t.type === 'recharge_deduct')
-        .reduce((s, t) => s + Math.abs(t.amount), 0);
+      // 累计充值总额由服务端以到账流水汇总（口径唯一，兼容旧库）
+      const total = typeof data.total_recharged === 'number'
+        ? data.total_recharged
+        : (data.transactions || [])
+            .filter(t => t.type === 'recharge' || t.type === 'recharge_deduct')
+            .reduce((s, t) => s + Math.abs(t.amount), 0);
       document.querySelector('#fund-balance').textContent = total;
       document.querySelector('#fund-badge').textContent = `累计充值：${total}`;
     }

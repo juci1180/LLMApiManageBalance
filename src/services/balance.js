@@ -80,20 +80,6 @@ function getByPath(obj, path) {
 
 // 内置平台余额查询器
 const providers = {
-  // OpenAI: GET https://api.openai.com/dashboard/billing/credit_grants
-  openai: async (platform) => {
-    const url = platform.balance_api_url || 'https://api.openai.com/dashboard/billing/credit_grants';
-    const res = await fetch(url, {
-      headers: { Authorization: `Bearer ${platform.api_key}` },
-    });
-    if (!res.ok) throw new Error(`OpenAI 余额查询失败: HTTP ${res.status}`);
-    const data = await res.json();
-    // total_available = total_granted - total_used
-    const total = getByPath(data, platform.balance_json_path || 'total_granted');
-    const used = getByPath(data, 'total_used');
-    return { balance: total - used, raw: data };
-  },
-
   // OpenAI：admin key + /v1/organization/costs 算本月消耗，余额 = 预付额(platform.balance_json_path 存预付总额，默认 100) - 本月消耗
   // 需要出境代理时，设置环境变量 HTTPS_PROXY 即可（Node 原生 fetch 在 Node24 走 EnvHttpProxyAgent 需显式开启；这里用 undici-free 方案：仅在 HTTPS_PROXY 存在时提示）
   openai: async (platform) => {
@@ -302,46 +288,6 @@ const providers = {
     }
   },
 
-  // 小米多模态（MiMo）：余额查询接口
-  mimo: async (platform) => {
-    if (!platform.api_key) throw new Error('MiMo需要配置API Key');
-    const url = platform.balance_api_url || 'https://mimo.mi.com/api/v1/balance';
-    const res = await fetch(url, {
-      headers: { Authorization: `Bearer ${platform.api_key}` },
-    });
-    if (!res.ok) throw new Error(`MiMo余额查询失败: HTTP ${res.status}`);
-    const data = await res.json();
-    const balance = getByPath(data, platform.balance_json_path || 'data.balance');
-    if (balance == null) throw new Error('未在返回中找到余额字段');
-    return { balance, raw: data };
-  },
-
-  // 智谱AI：余额查询接口（只需 API Key）
-  zhipu: async (platform) => {
-    if (!platform.api_key) throw new Error('智谱AI需要配置API Key');
-    // 调用智谱AI账户余额查询API，只需 API Key 鉴权
-    const url = platform.balance_api_url || 'https://open.bigmodel.cn/api/usage';
-    const res = await fetch(url, {
-      headers: {
-        'Authorization': `Bearer ${platform.api_key}`,
-        'Content-Type': 'application/json',
-      },
-    });
-    if (!res.ok) throw new Error(`智谱AI余额查询失败: HTTP ${res.status}`);
-    const data = await res.json();
-    // 调试：打印原始返回
-    console.log('智谱API返回:', JSON.stringify(data, null, 2));
-    // 兼容多种返回字段：remaining / remaining_quota / balance / data.balance / data / 其他结构
-    const balance = getByPath(data, platform.balance_json_path || 'remaining')
-      ?? getByPath(data, 'remaining_quota')
-      ?? getByPath(data, 'balance')
-      ?? getByPath(data, 'data.balance')
-      ?? getByPath(data, 'data')
-      ?? (typeof data === 'object' && data ? Object.values(data)[0] : null);
-    if (balance == null) throw new Error('未在返回中找到余额字段');
-    return { balance, raw: data, unit: '元' };
-  },
-
   // 小米MiMo：余额查询接口，支持api-key header和Authorization Bearer两种方式
   mimo: async (platform) => {
     if (!platform.api_key) throw new Error('小米MiMo需要配置API Key');
@@ -430,7 +376,8 @@ export async function refreshPlatformBalance(platformId) {
   const platform = db.prepare('SELECT * FROM platforms WHERE id = ?').get(platformId);
   if (!platform) throw new Error('平台不存在');
   console.log(`[refresh] 平台信息: name=${platform.name}, provider=${platform.provider}, balance_type=${platform.balance_type}`);
-  if (!platform.active) return null;
+  // 停用平台：不刷新，但返回结构化失败（避免调用方拿到 null 后读 .ok 崩溃）
+  if (!platform.active) return { ok: false, error: '平台已停用', platformId };
 
   try {
     const { balance, raw } = await fetchBalance(platform);
@@ -440,6 +387,13 @@ export async function refreshPlatformBalance(platformId) {
         'INSERT INTO balance_history (platform_id, balance, currency) VALUES (?, ?, ?)'
       ).run(platformId, balance, platform.currency);
       console.log(`[refresh] 余额已保存到历史记录`);
+      // 余额历史保留上限：每小时巡检持续写入，不清理则表无限膨胀
+      // （只保留最近 500 条，与 /history 接口的 max limit 一致）
+      db.prepare(`
+        DELETE FROM balance_history WHERE platform_id = ? AND id NOT IN (
+          SELECT id FROM balance_history WHERE platform_id = ? ORDER BY id DESC LIMIT 500
+        )
+      `).run(platformId, platformId);
     }
     // 刷新成功，清空上次错误标记
     db.prepare('UPDATE platforms SET latest_error = NULL WHERE id = ?').run(platformId);

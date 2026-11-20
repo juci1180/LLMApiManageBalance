@@ -29,7 +29,7 @@ npm start
 # 或直接双击 启动项.bat（提供菜单：启动/查看服务、打开汇总页）
 ```
 
-启动后访问 http://localhost:3000，数据库（data/llm-manager.db）首次启动自动创建，会被 .gitignore 排除、不上传。
+启动后访问 `http://localhost:<config.json 里的 port>`（默认 3000），数据库（src/data/llm-manager.db）首次启动自动创建，会被 .gitignore 排除、不上传。
 
 ### 添加平台
 
@@ -78,6 +78,7 @@ config.json 的 `notify` 字段：
 - `serverchan`：微信推送（sct.ftqq.com 申请 SendKey）
 - `bark`：iOS 推送（bark 推送 App 的设备 Key）
 - 留空表示不推送，只保留页面横幅 + 桌面弹窗；填好后重启服务生效
+- `port` 改了之后，`启动项.bat` 会自动跟随（它从 config.json 读端口），无需改脚本
 
 ## 余额查询方式
 
@@ -148,6 +149,6 @@ config.json                配置（端口、监控间隔、手机推送）
 
 ## 安全
 
-- 平台密钥存在数据库（data/llm-manager.db），列表接口返回掩码
+- 平台密钥存在数据库（src/data/llm-manager.db），列表接口与详情接口均返回掩码
 - 登录态/cookie 在 src/wallet-states/ 与 src/chrome-user-data/，已被 .gitignore 排除、绝不上传
 - 当前无鉴权：只在本机用可绑定 127.0.0.1；对外部署建议放内网 / 加反向代理认证
