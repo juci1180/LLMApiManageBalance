@@ -9,7 +9,7 @@
   - `public/index.html`：新增三个运营商 provider 选项、图标、快速添加模板；登录按钮与"全部一键登录"按钮对运营商生效。
   - `scripts/wallet-login.mjs`：登录目标纳入 `provider LIKE 'carrier_%'` 的平台；登录检测关键字支持数组。
   - `scripts/setup-carrier-platforms.mjs`：新增，一次性把三家运营商写入数据库。
-  - `scripts/test-carrier-balance.mjs`：新增，解析逻辑单元测试（37 项）。
+  - `scripts/test-carrier-balance.mjs`：新增，解析逻辑单元测试（41 项，含真实移动页面正文回归）。
 
 ## 2. 调研结论：官方接口到底有没有
 
@@ -34,7 +34,7 @@
 
 | 运营商 | 实测入口 | 实测现象 |
 |---|---|---|
-| 中国移动 | `https://shop.10086.cn/i/?f=home` | 正常渲染。未登录时跳转 `login.10086.cn/login.html?channelID=12003`，支持扫码登录；首页「服务专区」另有「账单查询」「余量查询」「充话费」直达链接 |
+| 中国移动 | `https://shop.10086.cn/i/?f=home` | 正常渲染。未登录时跳转 `login.10086.cn/login.html?channelID=12003`，支持扫码登录与短信随机码；首页「服务专区」另有「账单查询」「余量查询」「充话费」直达链接。**已登录实测**：个人中心页显示「我的账户 70.90元交费> 可用余额： 70.90元账单> 账户总余额 ： 0.00元详单>」 |
 | 中国电信 | `https://www.189.cn/` | **无头浏览器与桌面浏览器下正文均为 0 字、链接数为 0**，属站点级反爬拦截；`gd.189.cn`、`/service/index.html` 同样为空，`my.189.cn` 连接超时 |
 | 中国联通 | `https://www.10010.com/` | 正常渲染（hash 路由 SPA）。首页无余额链接，余额入口在 hover 展开的「查询」二级菜单；页面另有一个 `upay.10010.com/upayWeb/phoneSpeedy` 交费 iframe |
 
@@ -70,7 +70,7 @@ node scripts/wallet-check.mjs carrier_cmcc      # 只验一家
 
 # 4) 测试
 npm test                                  # 端到端冒烟（37 项）
-node scripts/test-carrier-balance.mjs     # 运营商解析单元测试（37 项）
+node scripts/test-carrier-balance.mjs     # 运营商解析单元测试（41 项）
 
 # 5) 本地启动
 npm run dev
@@ -79,8 +79,13 @@ npm run dev
 实测结果（本次改动后）：
 
 - `npm test` → 37 项全部通过，exit 0（新增 6 项运营商端到端用例：登录态检测、未登录时刷新返回结构化失败、错误提示指向登录脚本、抓取失败不生成充值单、不写入余额历史）
-- `node scripts/test-carrier-balance.mjs` → 37 项全部通过，exit 0
-- 真实网厅抓取**未做联调**：需要你的登录态，且网厅存在地区差异与风控，无法在无你的参与下取得真实余额。
+- `node scripts/test-carrier-balance.mjs` → 41 项全部通过，exit 0
+- **中国移动真实抓取已联调通过**（2026-11-20）：
+  - 登录：`node scripts/wallet-login.mjs carrier_cmcc` → 短信随机码登录 → 登录态保存到 `src/wallet-states/storage_carrier_cmcc.json`
+  - 抓取：`node scripts/wallet-check.mjs 中国移动话费` → `OK 中国移动话费 : 70.9`
+  - 与网厅页面显示的「可用余额： 70.90元」一致
+- **服务巡检链路已验证通过**：隔离端口实例触发运营商平台刷新 → `POST /api/platforms/:id/refresh` 返回 `{"ok":true,"balance":70.9,"platformId":"5"}`，`latest_balance=70.9`、`latest_error=null`、余额历史写入 2 条（说明 `fetchBalance → scrapeCarrier → 落库` 全链路通）
+- 中国电信、中国联通**仍未联调**：需你本人完成一次网厅登录（电信受反爬限制，还需桌面 Chrome 调试模式）
 
 ## 4. 配置与环境变量
 
@@ -108,7 +113,8 @@ npm run dev
 
 ## 6. 已知限制与后续项
 
-- **未做真实网厅联调**：需要你的登录态与实际省份网厅验证。移动的入口与登录跳转已实测确认，电信与联通的余额页文案仍需登录后核对。若某家抓不到，按 §7 的方式调规则即可。
+- **移动已联调，电信与联通未联调**：移动的入口、登录方式、余额文案、提取结果均已用真实页面确认（抓取值 70.9 与页面一致）。电信与联通仍需你本人完成一次网厅登录后才能确认余额页文案；若某家抓不到，按 §7 的方式调规则即可。
+- **同一页面存在多个金额，取错会误报欠费**：移动个人中心页同时有「可用余额 70.90元」与「账户总余额 0.00元」。若误取后者，会把 0 当成欠费并错误触发充值单。已为此实现排除词机制（`exclude`）：标签含「账户总/总额/累计/预存/冻结/赠费」的金额一律不采信；且关键字兜底路径要求关键字与数字之间只允许分隔符，不允许夹杂其他中文标签。两条都有回归用例覆盖。
 - **电信需要桌面 Chrome**：实测 189.cn 对无头浏览器做站点级拦截（页面正文 0 字）。电信的自动抓取依赖 `scripts/start-chrome-debug.cmd` 启动的桌面 Chrome 调试模式；无头失败时代码会自动回退到 CDP 模式重试，两者都不可用时请改用手动录入。
 - **依赖登录态**：登录态过期（运营商通常几天到几周）会导致抓取失败。系统已有连续 3 次失败推手机提醒的机制，但重新登录仍需你本人操作。
 - **联通的余额在二级菜单**：首页没有余额链接，需要先展开「查询」再点二级入口，规则已按此顺序配置，但仍可能因省份版本差异而失效。
@@ -121,10 +127,11 @@ npm run dev
 
 | 项 | 步骤 | 期望 |
 |---|---|---|
-| 解析正确性 | 运行 `node scripts/test-carrier-balance.mjs` | 37 项全通过，含负余额、千分位、栏目名不误命中、结构不符返回 null |
-| 存量不受影响 | 运行 `npm test` | 31 项全通过，已有平台行为不变 |
-| 登录流程 | 运行 `node scripts/wallet-login.mjs carrier_cmcc`，在弹窗输入服务密码 | 提示「登录成功，登录态已保存到 src/wallet-states/storage_carrier_cmcc.json」 |
-| 抓取可用 | 运行 `node scripts/wallet-check.mjs carrier_cmcc` | 输出 `OK 中国移动话费 : <数值>`；未登录则输出可读错误并列出缺登录态的平台 |
+| 解析正确性 | 运行 `node scripts/test-carrier-balance.mjs` | 41 项全通过，含真实移动页面正文（提取 70.9、不误取账户总余额 0）、负余额、千分位、栏目名不误命中、结构不符返回 null |
+| 存量不受影响 | 运行 `npm test` | 37 项全通过，已有平台行为不变 |
+| 登录流程 | 运行 `node scripts/wallet-login.mjs carrier_cmcc`，在弹窗输入短信验证码 | 提示「✓ 中国移动话费 登录成功，登录态已保存到 src/wallet-states/storage_carrier_cmcc.json」 |
+| 抓取可用（已实测通过） | 运行 `node scripts/wallet-check.mjs 中国移动话费` | 输出 `OK 中国移动话费 : 70.9`；未登录则输出可读错误并列出缺登录态的平台 |
+| 服务巡检链路（已实测通过） | 在页面点该平台的「刷新」按钮 | 返回 `{"ok":true,"balance":70.9}`，平台卡片显示余额 70.9 元且无错误标记，余额历史新增一条 |
 | 未登录可读性 | 删除某运营商登录态文件后刷新该平台 | 返回「尚未登录 xxx：请先运行 node scripts/wallet-login.mjs carrier_xx」而非 500 |
 | 失败不误建单 | 抓取失败后检查充值单列表 | 不产生新充值单（失败返回 null 而非 0） |
 | 降级可用 | 把运营商平台 `balance_type` 改为 `manual` 并录入余额 | 前端显示正常，低于阈值时正常生成充值单 |

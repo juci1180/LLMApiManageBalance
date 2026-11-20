@@ -46,16 +46,35 @@ for (const key of ['carrier_cmcc', 'carrier_ct', 'carrier_cu']) {
   check(`${key} 有网厅入口`, typeof CARRIER_ENTRY_URLS[key] === 'string' && CARRIER_ENTRY_URLS[key].startsWith('http'));
 }
 
-// 用户显式配置的规则不被内置覆盖
-const custom = enrichRuleWithBuiltin(parseScrapeRule('{"keyword":"我的余额","regex":"我的余额(\\\\d+)","entries":["我的入口"]}'), '中国移动话费', 'carrier_cmcc');
-check('用户自定义关键字优先', custom.keyword === '我的余额');
-check('用户自定义正则优先', custom.regex.includes('我的余额'));
-check('用户自定义入口优先', custom.entries[0] === '我的入口');
+// 2026-11-20 实测：内置浏览器登录后 shop.10086.cn/i/?f=home 的正文（节选，含真实金额）
+const REAL_CMCC = '中午好， 178****6402 星级：无星级 当前套餐：全家享套餐（全国版）29档 ' +
+  '我的账户 70.90元交费> 可用余额： 70.90元账单> 账户总余额 ： 0.00元详单> 当月消费 ： 获取失败 ' +
+  '我的AI豆： 交话费 充流量 交费号码： 揭阳 交费金额： 50元 100元 300元 500元 交费 立即交费 ' +
+  '套餐余量 语音 剩余49分钟 98% 共50分钟 流量 剩余2.44GB 81% 共3GB ' +
+  '近六个月消费趋势上月消费：29.10元平均每月消费：29.1元';
 
 // ===== 3. 余额提取：三家真实文案变体 =====
 const cmccRule = enrichRuleWithBuiltin(parseScrapeRule(''), '中国移动话费', 'carrier_cmcc');
 const ctRule = enrichRuleWithBuiltin(parseScrapeRule(''), '中国电信话费', 'carrier_ct');
 const cuRule = enrichRuleWithBuiltin(parseScrapeRule(''), '中国联通话费', 'carrier_cu');
+
+// 实测页面同时有「可用余额 70.90元」与「账户总余额 0.00元」，必须取前者
+check('移动实测页面：提取可用余额 70.9', extractBalance(REAL_CMCC, cmccRule) === 70.9);
+check('移动实测页面：不误取账户总余额 0', extractBalance(REAL_CMCC, cmccRule) !== 0);
+
+// 版本差异模拟：总余额标签排到可用余额前面，仍不能取到 0
+const SWAPPED = '账户总余额 ： 0.00元详单> 我的账户 70.90元交费> 可用余额： 70.90元账单>';
+check('总余额在前也不误取（排除词生效）', extractBalance(SWAPPED, cmccRule) === 70.9);
+
+// 排除词机制直接生效：总余额是唯一命中时返回 null（而不是 0，避免误报欠费）
+const ONLY_TOTAL = '账户总余额 ： 0.00元详单>';
+check('只有总余额时返回 null 而非 0', extractBalance(ONLY_TOTAL, cmccRule) === null);
+
+// 用户显式配置的规则不被内置覆盖
+const custom = enrichRuleWithBuiltin(parseScrapeRule('{"keyword":"我的余额","regex":"我的余额(\\\\d+)","entries":["我的入口"]}'), '中国移动话费', 'carrier_cmcc');
+check('用户自定义关键字优先', custom.keyword === '我的余额');
+check('用户自定义正则优先', custom.regex.includes('我的余额'));
+check('用户自定义入口优先', custom.entries[0] === '我的入口');
 
 // 中国移动：账户余额 \n ¥86.50
 check('移动：账户余额+￥', extractBalance('我的移动\n账户余额\n¥ 86.50\n套餐余量', cmccRule) === 86.5);

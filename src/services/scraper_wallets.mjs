@@ -115,26 +115,31 @@ export const CARRIER_ENTRY_URLS = {
 //  - balanceKeywords：余额在页面上的标签（等待命中用，任一命中即算命中）
 //  - regex：精确提取余额（单位元，负数表示欠费）
 //  - entries：网厅首页的菜单入口文字，抓取时依次点击进入余额子页
+//  - exclude：标签里带这些词的金额不采信（防止误取"账户总余额"这类旁支数字）
 export const CARRIER_RULES = {
   carrier_cmcc: {
-    balanceKeywords: ['账户余额', '账户可用余额', '可用余额', '当前余额'],
-    regex: '(?:账户余额|账户可用余额|可用余额|当前余额)[\\s:：()（）¥￥元]*(-?\\d[\\d,]*(?:\\.[0-9]{1,2})?)',
+    balanceKeywords: ['可用余额', '账户可用余额', '账户余额', '当前余额'],
+    regex: '(?:可用余额|账户可用余额|账户余额|当前余额)[\\s:：()（）¥￥元]*(-?\\d[\\d,]*(?:\\.[0-9]{1,2})?)',
     // 实测首页「服务专区」有「余额查询」入口（指向 shop.10086.cn/i/?f=home）
     entries: ['余额查询', '余量查询', '话费余额', '我的移动'],
+    // 实测同页并存「可用余额 70.90元」与「账户总余额 0.00元」，后者不是话费余额
+    exclude: ['账户总', '总额', '累计', '预存', '冻结', '赠费'],
   },
   carrier_ct: {
-    balanceKeywords: ['账户余额', '本月可用余额', '可用余额', '当前余额'],
-    regex: '(?:账户余额|本月可用余额|可用余额|当前余额)[\\s:：()（）¥￥元]*(-?\\d[\\d,]*(?:\\.[0-9]{1,2})?)',
+    balanceKeywords: ['可用余额', '本月可用余额', '账户余额', '当前余额'],
+    regex: '(?:可用余额|本月可用余额|账户余额|当前余额)[\\s:：()（）¥￥元]*(-?\\d[\\d,]*(?:\\.[0-9]{1,2})?)',
     // 实测：电信网厅在无头浏览器下反爬拦截（正文为 0），需靠桌面 Chrome 真实浏览器或
     // 已保存的登录态文件；菜单文字按常见网厅路径依次尝试
     entries: ['服务大厅', '查询服务', '费用查询', '话费账单', '余额查询', '我的账户'],
+    exclude: ['账户总', '总额', '累计', '预存', '冻结', '赠费'],
   },
   carrier_cu: {
-    balanceKeywords: ['账户余额', '账户当前可用余额', '可用余额', '当前余额'],
-    regex: '(?:账户余额|账户当前可用余额|可用余额|当前余额)[\\s:：()（）¥￥元]*(-?\\d[\\d,]*(?:\\.[0-9]{1,2})?)',
+    balanceKeywords: ['可用余额', '账户当前可用余额', '账户余额', '当前余额'],
+    regex: '(?:可用余额|账户当前可用余额|账户余额|当前余额)[\\s:：()（）¥￥元]*(-?\\d[\\d,]*(?:\\.[0-9]{1,2})?)',
     // 实测：联通首页余额入口在 hover 展开的「查询」二级菜单里（首页无余额链接），
     // 顺序为「先展开一级菜单，再点二级入口」
     entries: ['查询', '余额查询', '余量查询', '账户余额', '查话费'],
+    exclude: ['账户总', '总额', '累计', '预存', '冻结', '赠费'],
   },
 };
 
@@ -145,12 +150,15 @@ export function enrichRuleWithBuiltin(rule, name, provider) {
   // 运营商：套用内置的标签组、精确正则与网厅菜单入口
   const carrier = CARRIER_RULES[key];
   if (carrier) {
+    // 用户显式配了关键字时，不再叠加内置标签组（否则用户规则会被内置词干扰）
+    const userSetKeyword = Boolean(rule.keyword || (rule.keywords && rule.keywords.length));
     return {
       keyword: rule.keyword || carrier.balanceKeywords[0],
-      keywords: rule.keywords || carrier.balanceKeywords,
+      keywords: userSetKeyword ? (rule.keywords || null) : carrier.balanceKeywords,
       regex: rule.regex || carrier.regex,
       max: rule.max,
       entries: rule.entries || carrier.entries,
+      exclude: rule.exclude || carrier.exclude,
     };
   }
   if (key) {
@@ -163,58 +171,80 @@ export function enrichRuleWithBuiltin(rule, name, provider) {
         regex: rule.regex || precise || null,
         max: rule.max,
         entries: rule.entries || null,
+        exclude: rule.exclude || null,
       };
     }
   }
   return rule;
 }
 
-// 从页面文本中提取余额，两条路径：
+// 从页面文本中提取余额，三条路径：
 //   1. 精确正则优先：整页扫"关键字+金额符号+数字"，支持捕获组（取组1=金额），
 //      页面提示语、栏目名、账号名里的同名文字不会误中；
-//   2. 关键字兜底：正则未命中时，在关键字各出现位置中优先选"后跟金额符号（¥/￥）"的那处，
-//      取其后的第一个数字。
-export function extractBalance(text, { keyword, regex, max }) {
+//   2. 关键字兜底：正则未命中时，在关键字各出现位置中找"紧跟其后"的金额，
+//      关键字与数字之间只允许分隔符（空白/标点/货币符号/单位），
+//      不允许夹杂其他中文标签——否则「可用余额预警\n设置阈值 100」会误取到 100；
+//   3. 排除词（exclude）：标签里带排除词的金额一律不采信。
+//      真实场景：移动网厅同页同时有「可用余额 70.90元」和「账户总余额 0.00元」，
+//      若版本差异导致先命中总余额，会把 0.00 当成欠费并错误触发充值单。
+export function extractBalance(text, { keyword, keywords, regex, max, exclude }) {
   const limit = max ?? 1e7;
+  const excludes = Array.isArray(exclude) ? exclude.filter(Boolean) : [];
+  // 标签上下文：往后看整段匹配，往前多看几个字（用于识别「账户总余额」这类含排除词的标签）
+  const isExcluded = (start, len) => {
+    if (!excludes.length) return false;
+    const win = text.slice(Math.max(0, start - 6), start + len);
+    return excludes.some((w) => win.includes(w));
+  };
   const pick = (m) => {
     const g = m[1] !== undefined ? m[1] : m[0];
     const n = parseFloat(String(g).replace(/,/g, ''));
     return Number.isFinite(n) && Math.abs(n) <= limit ? n : null;
   };
   if (regex) {
-    const hits = [...text.matchAll(new RegExp(regex, 'g'))].map(pick).filter((v) => v !== null);
-    if (hits.length) return hits[0];
+    // 逐个匹配检查标签是否被排除，取第一个未被排除的金额
+    for (const m of text.matchAll(new RegExp(regex, 'g'))) {
+      if (isExcluded(m.index, m[0].length)) continue;
+      const v = pick(m);
+      if (v !== null) return v;
+    }
   }
-  let segment = text;
-  if (keyword) {
-    // 关键字允许是字符串或候选数组（运营商页面文案多变，任一命中即可）
-    const keys = (Array.isArray(keyword) ? keyword : [keyword]).filter(Boolean);
-    const positions = [];
-    for (const k of keys) {
+  // 关键字兜底：关键字组（keywords）优先于单个 keyword
+  const keyList = (Array.isArray(keywords) && keywords.length
+    ? keywords
+    : (Array.isArray(keyword) ? keyword : [keyword])
+  ).filter(Boolean);
+  if (keyList.length) {
+    // 分隔符：不含 '-'，负号留给数字本身（欠费）
+    const SEP = '[\\s:：()（）¥￥元]*';
+    const NUM = '(-?\\d[\\d,]*(?:\\.[0-9]{1,2})?)';
+    const candidates = [];
+    for (const k of keyList) {
       let idx = text.indexOf(k);
       while (idx >= 0) {
-        positions.push(idx);
+        if (!isExcluded(idx, k.length)) candidates.push({ idx, k });
         idx = text.indexOf(k, idx + k.length);
       }
     }
-    if (positions.length === 0) return null; // 关键字都没出现，视为页面结构不符
-    positions.sort((a, b) => a - b);
-    let chosen = positions[0]; // 无符号特征时退回第一次出现
-    for (const pos of positions) {
-      if (/[¥￥]/.test(text.slice(pos, pos + 40))) { // 关键字后 40 字符内有金额符号即视为真实标签
-        chosen = pos;
-        break;
-      }
+    if (!candidates.length) return null; // 关键字都没出现，视为页面结构不符
+    candidates.sort((a, b) => a.idx - b.idx);
+    // 优先带货币符号的标签位置（更可能是真正的余额展示位）
+    const withSymbol = candidates.filter((c) => /[¥￥]/.test(text.slice(c.idx, c.idx + 40)));
+    const ordered = [...withSymbol, ...candidates.filter((c) => !withSymbol.includes(c))];
+    for (const c of ordered) {
+      const after = text.slice(c.idx + c.k.length);
+      const m = after.match(new RegExp('^' + SEP + NUM));
+      if (!m) continue; // 关键字与数字之间夹了别的文字，不是余额展示位
+      const v = pick(m);
+      if (v !== null) return v;
     }
-    segment = text.slice(chosen, chosen + 160); // 关键字后面 160 字符通常是金额区域
+    return null;
   }
-  // 默认正则支持千分位逗号与负号（欠费）
+  // 没有任何关键字：整页取第一个在上限内的数字
   const numRe = /-?[0-9][0-9,]*(?:\.[0-9]+)?/g;
-  const matches = [...segment.matchAll(numRe)].map((m) => parseFloat(m[0].replace(/,/g, '')));
+  const matches = [...text.matchAll(numRe)].map((m) => parseFloat(m[0].replace(/,/g, '')));
   const valid = matches.filter((n) => Number.isFinite(n) && Math.abs(n) <= limit);
-  if (valid.length === 0) return null;
-  // 关键字后出现的第一个数字即余额
-  return valid[0];
+  return valid.length ? valid[0] : null;
 }
 
 function isLoginUrl(url) {
