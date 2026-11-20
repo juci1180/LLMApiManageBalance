@@ -105,11 +105,13 @@ Playwright 的 `chromium.executablePath()` 依赖 `PLAYWRIGHT_BROWSERS_PATH` 环
 
 代码已改为 `resolveBrowserExecutable()`：按「Playwright 自带 chromium → `PLAYWRIGHT_BROWSERS_PATH` 下的 `chromium-*/chrome-win64/chrome.exe` → 系统安装的 Chrome/Edge」逐个探测**实际存在的文件**，用绝对路径启动，不再依赖环境变量。
 
-### 3.3 189.cn 打不开：反自动化标记被识别
+### 3.3 189.cn 打不开：两层拦截
 
 **现象**：在自动化浏览器里打开 `https://www.189.cn/`，页面一片空白，正文长度为 0；同一个网址在日常浏览器里正常打开。
 
-**实测对照（2026-11-20）**：
+这是**两层独立的拦截**，必须都绕过才行。
+
+**第一层：反自动化标记**
 
 | 启动方式 | 结果 |
 |---|---|
@@ -117,9 +119,19 @@ Playwright 的 `chromium.executablePath()` 依赖 `PLAYWRIGHT_BROWSERS_PATH` 环
 | 系统 Chrome + 不带任何参数 | 正文 0 字，html 仅 39 字符 |
 | 系统 Chrome + `--disable-blink-features=AutomationControlled` | 正文 1186 字，跳转到 `/web/`，出现「账户余额」等业务文案 |
 
-**根因**：Playwright 默认把 `navigator.webdriver` 置为 `true`，189.cn 据此判定为自动化客户端，直接返回空页面。与无头模式、sandbox 参数都无关。
+Playwright 默认把 `navigator.webdriver` 置为 `true`，189.cn 据此判定为自动化客户端。修复：`BROWSER_ARGS` 增加 `--disable-blink-features=AutomationControlled`。
 
-**修复**：`BROWSER_ARGS` 增加 `--disable-blink-features=AutomationControlled`。登录脚本与巡检服务共用这一组参数，两边行为一致。
+**第二层：站点级拦无头浏览器**
+
+第一层修好后，有头模式能打开，**无头模式仍然返回空页面**：
+
+| 模式（均已带登录态） | 结果 |
+|---|---|
+| 无头 + 拦截图片字体 | 正文 0 字 |
+| 无头 + 不拦截图片字体 | 正文 0 字 |
+| **有头** | 正文 1257 字，可见「黄** / 190****3361 / 退出登录 / 账户余额」 |
+
+与是否拦截静态资源无关，纯粹由无头模式决定。修复：电信内置规则标记 `headlessBlocked: true`，抓取时改用有头窗口（窗口短暂弹出，抓完自动关闭）。`scrapeWithStorage` 支持 `headless` 参数，`scrapeWalletBalance` 与 `scrapeWalletsBatch` 按该标记分流，避免先无头失败再回退、白等一轮超时。
 
 ### 3.4 运营商登录判定：不能只看标签是否出现
 
@@ -136,7 +148,22 @@ Playwright 的 `chromium.executablePath()` 依赖 `PLAYWRIGHT_BROWSERS_PATH` 环
 1. 页面出现登录后专属文案「退出登录 / 退出」（未登录态实测出现次数为 0）；
 2. 余额标签后紧跟真实数字（占位符 `--` 不算；标签与数字之间夹了其他中文标签也不算）。
 
-相关回归用例在 `scripts/test-carrier-balance.mjs`（49 项）。
+### 3.5 电信首页是「数值在上、标签在下」
+
+移动网厅是「可用余额： 70.90元」（标签在前），电信网厅相反——金额出现在标签**之前**：
+
+```
+…手机 宽带 固话 54 .61 元 账户余额 0 .00 KB 已用专用流量 0 分钟 已用通用语音 0…
+```
+
+而且金额被拆成两段渲染（`54` + 换行 + `.61`）。两个后果：
+
+- 沿用「标签后取数」会取不到，或取到下一个栏目（`已用专用流量 0.00KB`）的数值；
+- 不做归一化，`54.61` 会被读成 `54`。
+
+修复：内置规则新增 `valueBeforeLabel` 标记，提取时**先**从标签位置往前找紧邻金额，**找不到再**走原来的「标签后跟金额」（兼容其他省份版本的相反布局）；`extractBalance` 先把跨行拆分的小数接回。
+
+相关回归用例在 `scripts/test-carrier-balance.mjs`（56 项）。
 
 ## 4. 配置与环境变量
 
