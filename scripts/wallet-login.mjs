@@ -49,7 +49,7 @@ const isLoginUrl = (u) => /login|passport|signin|cas\/|auth\/login/i.test(u || '
 
 // 等待页面满足：URL 不在登录页 + 页面文本包含余额关键字（连续两次确认）
 // 如果用户手动关闭了登录窗口，立即放弃当前平台（不再傻等超时）
-async function waitLoggedIn(page, keyword, timeoutMs = 10 * 60 * 1000) {
+async function waitLoggedIn(page, keyword, { timeoutMs = 10 * 60 * 1000, isCarrier = false } = {}) {
   const start = Date.now();
   let stable = 0;
   let closed = false;
@@ -61,7 +61,7 @@ async function waitLoggedIn(page, keyword, timeoutMs = 10 * 60 * 1000) {
       const text = await page.evaluate(() => (document.body ? document.body.innerText : ''));
       // keyword 可能是字符串或候选数组（运营商页面文案多变，任一命中即算命中）
       const kws = Array.isArray(keyword) ? keyword : [keyword];
-      const isCarrier = /^carrier_/.test(p.key);
+      // isCarrier 由调用方传入（见函数签名）
       // 运营商网厅：标签在未登录态也存在（如 189.cn 首页的「账户余额 --」），
       // 必须用 detectCarrierLoggedIn 判定，避免把未登录页面误判成已登录并导出无效登录态
       const hit = isCarrier ? detectCarrierLoggedIn(text, kws) : kws.some((k) => k && text.includes(k));
@@ -78,7 +78,14 @@ async function waitLoggedIn(page, keyword, timeoutMs = 10 * 60 * 1000) {
       } else {
         stable = 0;
       }
-    } catch (e) { /* 页面跳转中或窗口已关闭 */ }
+    } catch (e) {
+      // 不能静默吞掉：页面跳转中属正常，但代码错误（如引用了作用域外的变量）会表现为
+      // 每轮都抛异常、既不打印诊断也不判定登录，只能干等到超时。上次就踩过这个坑。
+      const elapsed = Date.now() - start;
+      if (elapsed % 10000 < 2000) {
+        console.log(`  [等待登录 ${Math.floor(elapsed / 1000)}s] 读取页面异常：${e.message}`);
+      }
+    }
     await new Promise((r) => setTimeout(r, 2000));
   }
   return false;
@@ -135,7 +142,7 @@ async function waitLoggedIn(page, keyword, timeoutMs = 10 * 60 * 1000) {
         console.log(`  ✗ 浏览器已不可用（窗口被关闭），结束登录流程。`);
         break;
       }
-      const ok = await waitLoggedIn(page, loginKeyword);
+      const ok = await waitLoggedIn(page, loginKeyword, { isCarrier: /^carrier_/.test(p.key) });
       if (ok) {
         await context.storageState({ path: storageFile });
         console.log(`  ✓ ${p.name} 登录成功，登录态已保存到 ${storageFile}`);
