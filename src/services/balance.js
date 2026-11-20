@@ -95,6 +95,9 @@ async function scrapeCarrier(platform, providerKey) {
     rule,
     debugLabel: platform.name,
     storageFile,
+    // 运营商网厅对无头浏览器反爬明显（实测电信 189.cn 无头下页面为空），
+    // 无头失败时允许退回桌面 Chrome（真实浏览器指纹与登录态）
+    allowCdpFallback: true,
   });
   return { balance, raw: {}, unit: platform.currency || '元', scraped: true };
 }

@@ -23,8 +23,8 @@ const PRESET_PLATFORMS = [
   { key: 'bailian',  name: '阿里云百炼',     url: 'https://billing-cost.console.aliyun.com',                rule: '{"keyword":"可用额度","max":10000000}' },
   { key: 'minimax',  name: 'MiniMax',        url: 'https://platform.minimax.cn/console/recharge-records',   rule: '{"keyword":"可用额度","max":10000000}' },
   { key: 'volc',     name: '火山引擎',       url: 'https://console.volcengine.com/finance/account-overview', rule: '{"keyword":"可用余额","max":10000000}' },
-  // 三大运营商个人卡：网上营业厅首页（登录后靠内置规则点菜单进余额页）
-  { key: 'carrier_cmcc', name: '中国移动话费', url: 'https://www.10086.cn/',  rule: '' },
+  // 三大运营商个人卡：网上营业厅（登录后靠内置规则点菜单进余额页）
+  { key: 'carrier_cmcc', name: '中国移动话费', url: 'https://shop.10086.cn/i/?f=home', rule: '' },
   { key: 'carrier_ct',   name: '中国电信话费', url: 'https://www.189.cn/',   rule: '' },
   { key: 'carrier_cu',   name: '中国联通话费', url: 'https://www.10010.com/', rule: '' },
 ];

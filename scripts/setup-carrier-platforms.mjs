@@ -12,7 +12,8 @@ const __dirname = dirname(fileURLToPath(import.meta.url));
 const dbFile = join(__dirname, '..', 'src', 'data', 'llm-manager.db');
 
 const CARRIERS = [
-  { name: '中国移动话费', provider: 'carrier_cmcc', url: 'https://www.10086.cn/' },
+  // 移动：首页「服务专区 → 余额查询」直达地址（实测 2026-11-20）
+  { name: '中国移动话费', provider: 'carrier_cmcc', url: 'https://shop.10086.cn/i/?f=home' },
   { name: '中国电信话费', provider: 'carrier_ct',   url: 'https://www.189.cn/' },
   { name: '中国联通话费', provider: 'carrier_cu',   url: 'https://www.10010.com/' },
 ];

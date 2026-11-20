@@ -99,6 +99,7 @@ config.json 的 `notify` 字段：
 - 无需 API Key；首次需运行 `node scripts/wallet-login.mjs carrier_cmcc`（或 `carrier_ct` / `carrier_cu`）登录网厅，需本人输入服务密码或短信验证码
 - 登录态存于 `src/wallet-states/storage_carrier_*.json`（已排除出版本库）
 - 抓取规则内置在 `src/services/scraper_wallets.mjs` 的 `CARRIER_RULES`，含候选关键字组与网厅菜单入口；网厅分省部署，菜单文案有差异，抓不到时可在平台编辑页用 `balance_json_path` 覆盖
+- 实测：电信网厅（189.cn）对无头浏览器做站点级拦截，自动抓取需配合 `scripts/start-chrome-debug.cmd` 启动的桌面 Chrome；无头失败时代码会自动改用桌面 Chrome 重试
 - 建议 `threshold` 调小（默认 20 元），话费余额量级远小于 API 余额
 - 详情与官方接口出处见 `docs/carrier-balance/README.md`
 

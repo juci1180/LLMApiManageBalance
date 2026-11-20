@@ -76,10 +76,11 @@ export const SAFE_KEYWORD_BY_KEY = {
   kimi: '可用余额',
   bailian: '可用额度',
   volc: '可用余额',
-  // 三大运营商个人卡：登录后网厅右上角出现"退出登录"，据此判断登录成功
-  carrier_cmcc: ['退出登录', '退出'],
-  carrier_ct: ['退出登录', '退出'],
-  carrier_cu: ['退出登录', '退出'],
+  // 三大运营商个人卡：登录后网厅右上角出现"退出登录"；部分省份版本不显示退出文字，
+  // 登录后首页/余额页会出现余额标签，因此两者并用，任一命中即视为已登录
+  carrier_cmcc: ['退出登录', '退出', '账户余额', '账户可用余额', '可用余额', '当前余额'],
+  carrier_ct: ['退出登录', '退出', '账户余额', '本月可用余额', '可用余额', '当前余额'],
+  carrier_cu: ['退出登录', '退出', '账户余额', '账户当前可用余额', '可用余额', '当前余额'],
 };
 
 // 内置各平台精确提取正则（按登录态 key 匹配）：
@@ -104,7 +105,8 @@ export const PRECISE_REGEX_BY_KEY = {
 // 三大运营商网厅入口（登录后靠 CARRIER_RULES.entries 点菜单进入余额页）
 // 页面结构与登录方式各省略有差异，可在平台配置里覆盖 balance_api_url
 export const CARRIER_ENTRY_URLS = {
-  carrier_cmcc: 'https://www.10086.cn/',
+  // 中国移动：首页「服务专区 → 余额查询」直达地址（实测 2026-11-20）
+  carrier_cmcc: 'https://shop.10086.cn/i/?f=home',
   carrier_ct: 'https://www.189.cn/',
   carrier_cu: 'https://www.10010.com/',
 };
@@ -115,19 +117,24 @@ export const CARRIER_ENTRY_URLS = {
 //  - entries：网厅首页的菜单入口文字，抓取时依次点击进入余额子页
 export const CARRIER_RULES = {
   carrier_cmcc: {
-    balanceKeywords: ['账户余额', '账户可用余额', '可用余额'],
-    regex: '(?:账户余额|账户可用余额|可用余额)[\\s:：()（）¥￥元]*(-?\\d[\\d,]*(?:\\.[0-9]{1,2})?)',
-    entries: ['我的移动', '费用查询', '账户信息', '查询服务', '话费余额'],
+    balanceKeywords: ['账户余额', '账户可用余额', '可用余额', '当前余额'],
+    regex: '(?:账户余额|账户可用余额|可用余额|当前余额)[\\s:：()（）¥￥元]*(-?\\d[\\d,]*(?:\\.[0-9]{1,2})?)',
+    // 实测首页「服务专区」有「余额查询」入口（指向 shop.10086.cn/i/?f=home）
+    entries: ['余额查询', '余量查询', '话费余额', '我的移动'],
   },
   carrier_ct: {
-    balanceKeywords: ['账户余额', '本月可用余额', '可用余额'],
-    regex: '(?:账户余额|本月可用余额|可用余额)[\\s:：()（）¥￥元]*(-?\\d[\\d,]*(?:\\.[0-9]{1,2})?)',
-    entries: ['服务大厅', '查询服务', '费用查询', '话费账单', '我的账户'],
+    balanceKeywords: ['账户余额', '本月可用余额', '可用余额', '当前余额'],
+    regex: '(?:账户余额|本月可用余额|可用余额|当前余额)[\\s:：()（）¥￥元]*(-?\\d[\\d,]*(?:\\.[0-9]{1,2})?)',
+    // 实测：电信网厅在无头浏览器下反爬拦截（正文为 0），需靠桌面 Chrome 真实浏览器或
+    // 已保存的登录态文件；菜单文字按常见网厅路径依次尝试
+    entries: ['服务大厅', '查询服务', '费用查询', '话费账单', '余额查询', '我的账户'],
   },
   carrier_cu: {
-    balanceKeywords: ['账户余额', '账户当前可用余额', '可用余额'],
-    regex: '(?:账户余额|账户当前可用余额|可用余额)[\\s:：()（）¥￥元]*(-?\\d[\\d,]*(?:\\.[0-9]{1,2})?)',
-    entries: ['查话费', '费用查询', '余额查询', '我的账单', '账户余额'],
+    balanceKeywords: ['账户余额', '账户当前可用余额', '可用余额', '当前余额'],
+    regex: '(?:账户余额|账户当前可用余额|可用余额|当前余额)[\\s:：()（）¥￥元]*(-?\\d[\\d,]*(?:\\.[0-9]{1,2})?)',
+    // 实测：联通首页余额入口在 hover 展开的「查询」二级菜单里（首页无余额链接），
+    // 顺序为「先展开一级菜单，再点二级入口」
+    entries: ['查询', '余额查询', '余量查询', '账户余额', '查话费'],
   },
 };
 
@@ -288,15 +295,18 @@ export const BROWSER_ARGS = [
 ];
 
 // 按可见文字点击页面元素（网厅菜单入口），成功返回 true
+// 先按精确文字找（避免点到同义栏目），找不到再退回模糊匹配
 async function clickByText(page, text, timeoutMs = 6000) {
-  try {
-    const loc = page.getByText(text, { exact: false }).first();
-    await loc.click({ timeout: timeoutMs });
-    await page.waitForTimeout(1500);
-    return true;
-  } catch {
-    return false;
+  for (const exact of [true, false]) {
+    try {
+      const loc = page.getByText(text, { exact }).first();
+      await loc.click({ timeout: timeoutMs });
+      // 一级菜单点击后可能展开二级菜单，等页面稳定
+      await page.waitForTimeout(1800);
+      return true;
+    } catch { /* 换一种匹配方式继续 */ }
   }
+  return false;
 }
 
 // 在给定页面上完成一次抓取：打开钱包页 → 等待关键字 → 提取余额
@@ -338,11 +348,24 @@ async function scrapeOnePage(page, { url, rule, debugLabel = '平台', waitMs = 
   return balance;
 }
 
+// 无头抓取时的浏览器上下文参数：
+// 运营商网厅（尤其电信 189.cn）对无头浏览器的指纹敏感，实测无头环境下页面正文为空、
+// 链接数为 0（反爬拦截）。补上真实 Chrome UA、中文区域与时区，降低被拦截的概率；
+// 仍然拿不到时，靠桌面 Chrome CDP（真实浏览器指纹）作为回退路径。
+const HEADLESS_CONTEXT_OPTIONS = {
+  viewport: { width: 1440, height: 900 },
+  locale: 'zh-CN',
+  timezoneId: 'Asia/Shanghai',
+  userAgent:
+    'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) ' +
+    'Chrome/131.0.0.0 Safari/537.36',
+};
+
 // 用登录态文件（storageState）无头抓取单平台
 async function scrapeWithStorage(storageFile, { url, rule, debugLabel, waitMs }) {
-  const browser = await chromium.launch({ headless: true });
+  const browser = await chromium.launch({ headless: true, channel: 'chromium' });
   try {
-    const context = await browser.newContext({ storageState: storageFile, viewport: { width: 1280, height: 900 } });
+    const context = await browser.newContext({ storageState: storageFile, ...HEADLESS_CONTEXT_OPTIONS });
     const page = await context.newPage();
     try {
       return await scrapeOnePage(page, { url, rule, debugLabel, waitMs, blockAssets: true });
@@ -355,30 +378,45 @@ async function scrapeWithStorage(storageFile, { url, rule, debugLabel, waitMs })
   }
 }
 
+// 连接桌面 Chrome（共享其实时登录态）并在其中抓取
+// 注意：不关闭 browser——连接的是用户桌面 Chrome，关闭会关掉用户浏览器
+async function scrapeViaDesktopChrome({ url, rule, debugLabel, waitMs }) {
+  const browser = await connectDesktopChrome();
+  let page;
+  try {
+    const ctx = browser.contexts()[0] || (await browser.newContext());
+    page = await ctx.newPage();
+    return await scrapeOnePage(page, { url, rule, debugLabel, waitMs, blockAssets: false });
+  } finally {
+    if (page) {
+      try { await page.close(); } catch {}
+    }
+  }
+}
+
 // 单平台抓取（优先级）：
 //   1. 登录态文件 src/wallet-states/storage_<key>.json（参照 E:\ai-wallet-monitor-portable 方案）；
 //   2. 连接桌面 Chrome 实时登录态（CDP，端口 9222）；
 //   3. 回退到独立浏览器档案 src/playwright-user-data。
 // headless=false 仅用于独立档案的登录场景。
-export async function scrapeWalletBalance({ url, rule, debugLabel = '平台', headless = true, waitMs = 8000, storageFile = null }) {
+export async function scrapeWalletBalance({ url, rule, debugLabel = '平台', headless = true, waitMs = 8000, storageFile = null, allowCdpFallback = false }) {
+  // allowCdpFallback=true：登录态文件抓取失败后，退回桌面 Chrome（真实浏览器指纹）。
+  // 运营商网厅对无头浏览器反爬明显（实测电信 189.cn 无头下页面为空），需要这条退路。
   if (storageFile) {
-    return await scrapeWithStorage(storageFile, { url, rule, debugLabel, waitMs });
+    try {
+      return await scrapeWithStorage(storageFile, { url, rule, debugLabel, waitMs });
+    } catch (err) {
+      if (!allowCdpFallback) throw err;
+      const cdpUp = await isDesktopChromeRunning();
+      if (!cdpUp) throw err;
+      console.warn(`[scrape] ${debugLabel} 无头抓取失败（${err.message}），改用桌面 Chrome 重试`);
+      return await scrapeViaDesktopChrome({ url, rule, debugLabel, waitMs });
+    }
   }
 
   const cdpUp = await isDesktopChromeRunning();
   if (cdpUp) {
-    const browser = await connectDesktopChrome();
-    let page;
-    try {
-      const ctx = browser.contexts()[0] || (await browser.newContext());
-      page = await ctx.newPage();
-      return await scrapeOnePage(page, { url, rule, debugLabel, waitMs, blockAssets: false });
-    } finally {
-      if (page) {
-        try { await page.close(); } catch {}
-      }
-      // 注意：不关闭 browser——连接的是用户桌面 Chrome，关闭会关掉用户浏览器
-    }
+    return await scrapeViaDesktopChrome({ url, rule, debugLabel, waitMs });
   }
 
   fs.mkdirSync(PROFILE_DIR, { recursive: true });

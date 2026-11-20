@@ -265,7 +265,7 @@
       // 运营商没有面向个人开放的查余额 API，这里走网上营业厅页面抓取：
       // 首次需运行 node scripts/wallet-login.mjs 登录一次网厅，之后定时巡检自动读余额
       { provider:'carrier_cmcc', name:'中国移动话费', balanceType:'api', currency:'CNY', threshold:20,
-        url:'https://www.10086.cn/',
+        url:'https://shop.10086.cn/i/?f=home',
         hint:'手机卡话费余额：无需 API Key，登录中国移动网上营业厅读取「账户余额」。首次需运行 <code>node scripts/wallet-login.mjs carrier_cmcc</code> 登录一次（需服务密码或短信验证码）。' },
       { provider:'carrier_ct', name:'中国电信话费', balanceType:'api', currency:'CNY', threshold:20,
         url:'https://www.189.cn/',
