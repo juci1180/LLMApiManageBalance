@@ -50,7 +50,11 @@ export async function initSchema() {
       target_amount REAL,
       active INTEGER DEFAULT 1,
       created_at TEXT DEFAULT (datetime('now','localtime')),
-      updated_at TEXT DEFAULT (datetime('now','localtime'))
+      updated_at TEXT DEFAULT (datetime('now','localtime')),
+      -- 最后一次余额查询：尝试时刻（成功与失败都记）、结果、上一次成功时刻
+      last_query_at TEXT,
+      last_query_status TEXT,
+      last_success_at TEXT
     );
 
     CREATE TABLE IF NOT EXISTS balance_history (
@@ -108,6 +112,15 @@ export async function initSchema() {
     // 迁移：最近一次刷新错误（抓取失败/登录态过期提示用）
     if (!names.includes('latest_error')) {
       db.run('ALTER TABLE platforms ADD COLUMN latest_error TEXT');
+    }
+    // 迁移：最后查询时刻与结果（界面「最后查询」列用）
+    //   last_query_at    最后一次查询尝试的时刻（成功与失败都更新）
+    //   last_query_status 'ok' / 'fail'
+    //   last_success_at  最后一次查询成功的时刻（用来判断「多久没查成」）
+    for (const col of ['last_query_at', 'last_query_status', 'last_success_at']) {
+      if (!names.includes(col)) {
+        db.run(`ALTER TABLE platforms ADD COLUMN ${col} TEXT`);
+      }
     }
   } catch {}
 

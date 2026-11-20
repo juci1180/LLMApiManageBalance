@@ -223,7 +223,46 @@ try {
 
   await api('DELETE', `/api/platforms/${cid}`);
 
-  // ===== 9. 收尾：测试数据清零 =====
+  // ===== 9. 「最后查询」字段（全部实例适用） =====
+  // 口径：最后一次「尝试查询」的时刻（成功与失败都更新）+ 结果标记
+  // 注：冒烟测试平台 pid 已在第 6 节删除，这里另建实例独立验证
+  const lqManualPlat = await api('POST', '/api/platforms', {
+    name: '手动录入最后查询测试', provider: 'generic', balance_type: 'manual',
+    currency: 'USD', threshold: 200, recharge_amount: 500,
+  });
+  const lqManualId = lqManualPlat.json.id;
+  const lqManualFresh = (await api('GET', '/api/platforms')).json.find((x) => x.id === lqManualId);
+  check('手动录入型：还没录入时无最后查询时刻', !lqManualFresh?.last_query_at,
+    `at=${lqManualFresh?.last_query_at}`);
+  await api('POST', `/api/platforms/${lqManualId}/balance`, { balance: 88 });
+  const lqManual = (await api('GET', '/api/platforms')).json.find((x) => x.id === lqManualId);
+  // 手动录入型：录入余额即算一次查询
+  check('手动录入型：录入后有最后查询时刻', Boolean(lqManual?.last_query_at),
+    `at=${lqManual?.last_query_at}`);
+  check('手动录入型：结果标记为 ok', lqManual?.last_query_status === 'ok');
+  check('手动录入型：不参与自动查询（query_auto=false）', lqManual?.query_auto === false);
+  check('手动录入型：刚录入不算陈旧', lqManual?.query_stale === false,
+    `stale=${lqManual?.query_stale}`);
+  await api('DELETE', `/api/platforms/${lqManualId}`);
+
+  // 失败也要更新时间（否则看不出「刚刚查过但失败」）
+  const lqFailPlat = await api('POST', '/api/platforms', {
+    name: '最后查询失败测试', provider: 'generic', balance_type: 'api',
+    balance_api_url: 'http://127.0.0.1:9/never', balance_json_path: 'balance',
+  });
+  const lqFailId = lqFailPlat.json.id;
+  const lqBefore = (await api('GET', '/api/platforms')).json.find((x) => x.id === lqFailId);
+  check('新建实例：还没有查询记录', !lqBefore?.last_query_at && !lqBefore?.last_query_status);
+  const lqRefresh = await api('POST', `/api/platforms/${lqFailId}/refresh`);
+  check('刷新失败返回结构化失败', lqRefresh.json?.ok === false);
+  const lqAfter = (await api('GET', '/api/platforms')).json.find((x) => x.id === lqFailId);
+  check('失败后也记录了最后查询时刻', Boolean(lqAfter?.last_query_at), `at=${lqAfter?.last_query_at}`);
+  check('失败结果标记为 fail（前端标红）', lqAfter?.last_query_status === 'fail');
+  check('失败后 query_failed=true（前端标红）', lqAfter?.query_failed === true);
+  check('失败后未成功过，不标黄', lqAfter?.query_stale === false);
+  await api('DELETE', `/api/platforms/${lqFailId}`);
+
+  // ===== 10. 收尾：测试数据清零 =====
   const fin = await api('GET', '/api/platforms');
   check('测试平台全部清理', Array.isArray(fin.json) && fin.json.length === 0, `len=${fin.json?.length}`);
 

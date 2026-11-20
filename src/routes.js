@@ -1,6 +1,6 @@
 // API 路由
 import db from './db/index.js';
-import { refreshPlatformBalance } from './services/balance.js';
+import { refreshPlatformBalance, markQueried } from './services/balance.js';
 import {
   maybeCreateRechargeOrder, notifyOrder, markPaid, creditOrder, tryCreditOrder,
   depositFundPool, getFundPool,
@@ -13,6 +13,7 @@ import { dirname, join } from 'node:path';
 import { storageKeyFor, storageFileFor, CARRIER_RULES, CARRIER_KEEPALIVE_MS, ruleKeyFor } from './services/scraper_wallets.mjs';
 import { buildSessionStatus } from './services/session_status.mjs';
 import { readSessionMeta } from './services/session_meta.mjs';
+import { computeQueryStatus } from './services/query_status.mjs';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const PROJECT_ROOT = join(__dirname, '..');
@@ -163,14 +164,43 @@ export async function registerRoutes(fastify) {
   });
 
   // ===== 平台面板 =====
+  // 列表附带最新余额与「最后查询」信息
   fastify.get('/api/platforms', async () => {
     const list = db.prepare('SELECT * FROM platforms ORDER BY id').all();
-    // 附带最新余额
+    // 「最后查询」陈旧阈值：巡检周期 2 倍（默认 1 小时 → 2 小时）
+    const staleAfterMs = monitorIntervalMs() * 2;
+    const now = Date.now();
     return list.map((p) => {
       const latest = db.prepare(
         'SELECT balance, checked_at FROM balance_history WHERE platform_id = ? ORDER BY id DESC LIMIT 1'
       ).get(p.id);
-      return { ...p, api_key: p.api_key ? '••••••••' : '', api_key_secret: p.api_key_secret ? '••••••••' : '', latest_balance: latest?.balance ?? null, latest_checked_at: latest?.checked_at ?? null };
+      // 手动录入型平台没有「自动查询」：它的「最后查询」是用户最后一次录入余额的时刻
+      const autoQueried = (p.balance_type || 'api') !== 'manual';
+      const qs = computeQueryStatus({
+        lastQueryAt: p.last_query_at,
+        lastQueryStatus: p.last_query_status,
+        lastSuccessAt: p.last_success_at,
+        // 停用平台本就不再被巡检，不算「陈旧」（否则会造成假警报）
+        staleEligible: p.active !== 0,
+        now,
+        staleAfterMs,
+      });
+      return {
+        ...p,
+        api_key: p.api_key ? '••••••••' : '',
+        api_key_secret: p.api_key_secret ? '••••••••' : '',
+        latest_balance: latest?.balance ?? null,
+        latest_checked_at: latest?.checked_at ?? null,
+        last_query_at: p.last_query_at || null,
+        last_query_status: p.last_query_status || null,
+        last_success_at: p.last_success_at || null,
+        // 上一次查询是否失败（标红）
+        query_failed: qs.failed,
+        // 超过巡检周期 2 倍没有成功查询（标黄）
+        query_stale: qs.stale,
+        // 手动录入型平台不是自动查询
+        query_auto: autoQueried,
+      };
     });
   });
 
@@ -266,6 +296,9 @@ export async function registerRoutes(fastify) {
     if (!p) return reply.code(404).send({ error: '平台不存在' });
     db.prepare('INSERT INTO balance_history (platform_id, balance, currency) VALUES (?, ?, ?)')
       .run(p.id, num, p.currency);
+    // 手动录入型平台：用户录入余额就是它唯一的数据来源，
+    // 记为一次「查询」（界面上该列显示最后录入时刻）
+    if ((p.balance_type || 'api') === 'manual') markQueried(p.id, true);
     return { ok: true };
   });
 

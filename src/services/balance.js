@@ -410,6 +410,23 @@ export async function fetchBalance(platform) {
   return result;
 }
 
+// 记录一次余额查询尝试（成功与失败都记）
+// last_query_at    = 本次尝试的时刻（界面「最后查询」列显示这个）
+// last_query_status= 'ok' / 'fail'（用于标红）
+// last_success_at  = 最后一次成功的时刻（用于判断「多久没查成」→ 标黄）
+export function markQueried(platformId, ok) {
+  const now = new Date().toISOString();
+  if (ok) {
+    db.prepare(
+      "UPDATE platforms SET last_query_at = ?, last_query_status = 'ok', last_success_at = ? WHERE id = ?"
+    ).run(now, now, platformId);
+  } else {
+    db.prepare(
+      "UPDATE platforms SET last_query_at = ?, last_query_status = 'fail' WHERE id = ?"
+    ).run(now, platformId);
+  }
+}
+
 export async function refreshPlatformBalance(platformId) {
   console.log(`[refresh] 开始刷新平台 id=${platformId}...`);
   const platform = db.prepare('SELECT * FROM platforms WHERE id = ?').get(platformId);
@@ -417,6 +434,9 @@ export async function refreshPlatformBalance(platformId) {
   console.log(`[refresh] 平台信息: name=${platform.name}, provider=${platform.provider}, balance_type=${platform.balance_type}`);
   // 停用平台：不刷新，但返回结构化失败（避免调用方拿到 null 后读 .ok 崩溃）
   if (!platform.active) return { ok: false, error: '平台已停用', platformId };
+  // 手动录入型平台没有「自动查询」：余额来自用户录入，
+  // 它的「最后查询」在录入余额时记（见 routes.js），刷新只是读回已录的值，不算查询。
+  const isManual = (platform.balance_type || 'api') === 'manual';
 
   try {
     const { balance, raw } = await fetchBalance(platform);
@@ -436,11 +456,15 @@ export async function refreshPlatformBalance(platformId) {
     }
     // 刷新成功，清空上次错误标记
     db.prepare('UPDATE platforms SET latest_error = NULL WHERE id = ?').run(platformId);
+    // 记录本次查询（成功与失败都记，界面「最后查询」列用）
+    if (!isManual) markQueried(platformId, true);
     return { ok: true, balance, platformId };
   } catch (err) {
     console.error(`[refresh] 刷新失败:`, err);
     // 记录错误，前端标"抓取失败"，连续失败会触发登录态过期提醒
     db.prepare('UPDATE platforms SET latest_error = ? WHERE id = ?').run(String(err.message).slice(0, 300), platformId);
+    // 失败同样算一次查询尝试：时间要更新（否则看不出「刚刚查过但失败」）
+    if (!isManual) markQueried(platformId, false);
     return { ok: false, error: err.message, platformId };
   }
 }
