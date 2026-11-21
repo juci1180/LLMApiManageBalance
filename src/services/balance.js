@@ -5,6 +5,8 @@ import db from '../db/index.js';
 import { createHash, createHmac } from 'node:crypto';
 import { scrapeMiniMaxBalance } from './scraper_minimax.mjs';
 import { scrapeWalletBalance, parseScrapeRule, storageFileFor, storageKeyFor, enrichRuleWithBuiltin, CARRIER_ENTRY_URLS } from './scraper_wallets.mjs';
+import { classifySessionObservation } from './session_status.mjs';
+import { markSessionAlive, markSessionDead } from './session_meta.mjs';
 
 // 火山引擎 OpenAPI 签名（HMAC-SHA256，类似 AWS SigV4）
 function sha256hex(s) { return createHash('sha256').update(s).digest('hex'); }
@@ -410,6 +412,42 @@ export async function fetchBalance(platform) {
   return result;
 }
 
+// 写入一个设置项
+function setSetting(key, value) {
+  db.prepare('INSERT OR REPLACE INTO settings (key, value) VALUES (?, ?)').run(key, String(value));
+}
+
+// 记录本次访问观测到的会话状态（地面真相）。
+//
+// 为什么放在这里（实测 2026-11-21）：会话状态此前只有巡检（monitor.js）在写，
+// 手动刷新走的路径不写。于是用户重新扫码登录后手动刷新能抓到余额，
+// 界面却仍显示「未登录」——查询成功与状态显示自相矛盾。
+// 三个入口（手动刷新 / 巡检 / 到账后重查）都经过 refreshPlatformBalance，
+// 所以这是唯一的共同所有者：在这里记录，三条路径自动一致。
+//
+// 三态判定（classifySessionObservation）：
+//   alive   → 写入 1
+//   dead    → 写入 0
+//   unknown → 保留上一次观测值（网络抖动等与登录态无关的失败不能用来判断生死）
+export function recordSessionObservation(platform, result) {
+  if (!platform || !String(platform.provider || '').startsWith('carrier_')) return;
+  const observation = classifySessionObservation(result);
+  if (observation === 'unknown') return;
+  const key = `session_alive_${platform.id}`;
+  const storageFile = storageFileFor(platform.name, platform.provider, platform.id);
+  if (observation === 'alive') {
+    setSetting(key, 1);
+    // 抓取路径内部通常已经记过；桌面 Chrome 回退路径没有，这里补上，
+    // 保证「用户在自己浏览器里登录、我们通过 CDP 抓到」时也能建立倒计时锚点。
+    if (storageFile) markSessionAlive(storageFile);
+  } else {
+    setSetting(key, 0);
+    // 抓取失败时抓取器不会标失效，这里补记——否则 meta 里会留着旧的
+    // 「上次有效访问时刻」，倒计时继续给乐观估计。
+    if (storageFile) markSessionDead(storageFile);
+  }
+}
+
 // 记录一次余额查询尝试（成功与失败都记）
 // last_query_at    = 本次尝试的时刻（界面「最后查询」列显示这个）
 // last_query_status= 'ok' / 'fail'（用于标红）
@@ -458,6 +496,8 @@ export async function refreshPlatformBalance(platformId) {
     db.prepare('UPDATE platforms SET latest_error = NULL WHERE id = ?').run(platformId);
     // 记录本次查询（成功与失败都记，界面「最后查询」列用）
     if (!isManual) markQueried(platformId, true);
+    // 记录会话观测结果（手动刷新也会更新会话状态）
+    recordSessionObservation(platform, { ok: true });
     return { ok: true, balance, platformId };
   } catch (err) {
     console.error(`[refresh] 刷新失败:`, err);
@@ -465,6 +505,8 @@ export async function refreshPlatformBalance(platformId) {
     db.prepare('UPDATE platforms SET latest_error = ? WHERE id = ?').run(String(err.message).slice(0, 300), platformId);
     // 失败同样算一次查询尝试：时间要更新（否则看不出「刚刚查过但失败」）
     if (!isManual) markQueried(platformId, false);
+    // 记录会话观测结果：跳登录页 = 会话已失效；其他失败与登录态无关，不改状态
+    recordSessionObservation(platform, { ok: false, error: String(err.message) });
     return { ok: false, error: err.message, platformId };
   }
 }

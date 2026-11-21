@@ -74,11 +74,10 @@ export async function runMonitorCycle() {
         // 续命倒计时 = 下一次访问网厅 = 巡检与保活中较早的那个，所以失败也要记时刻。
         if (String(p.provider || '').startsWith('carrier_')) {
           setSetting(`monitor_at_${p.id}`, Date.now());
-          // 记录本次观测到的会话状态（地面真相）：抓成功 = 会话有效；
-          // 报错且指向登录页 = 会话已失效。倒计时不能只靠 cookie 过期时间乐观估计——
-          // 电信的 7 天票据还在时，会话也可能已被服务端作废（实测：票据未过期但页面已回未登录态）。
-          const dead = r.ok === false && /未登录|跳转登录页/.test(String(r.error || ''));
-          setSetting(`session_alive_${p.id}`, r.ok ? 1 : (dead ? 0 : 1));
+          // 会话状态（session_alive_*）由 refreshPlatformBalance 统一记录——
+          // 手动刷新、巡检、到账后重查三条路径都经过那里，判定口径只有一份。
+          // 这里不再重复写，避免出现两套判定（早先这里把「与登录态无关的失败」
+          // 也记成会话有效，会掩盖真正的掉线）。
         }
         if (!r.ok) {
           results.errors.push({ platformId: p.id, error: r.error });

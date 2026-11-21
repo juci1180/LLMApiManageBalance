@@ -2,7 +2,7 @@
 // 三大运营商个人卡余额：解析逻辑单元测试（不联网、不依赖真实网厅）
 // 覆盖：规则解析、内置规则套用、余额提取（多文案变体 / 负数 / 千分位 / 误命中防护）
 import { parseScrapeRule, enrichRuleWithBuiltin, extractBalance, CARRIER_RULES, CARRIER_ENTRY_URLS, SAFE_KEYWORD_BY_KEY, STORAGE_KEY_BY_NAME, detectCarrierLoggedIn, classifySessionState, BROWSER_ARGS, CARRIER_KEEPALIVE_MS, storageKeyFor, ruleKeyFor } from '../src/services/scraper_wallets.mjs';
-import { pickKeySessionCookie, buildSessionStatus, missingRequiredCookies, findDegradedCookies } from '../src/services/session_status.mjs';
+import { pickKeySessionCookie, buildSessionStatus, missingRequiredCookies, findDegradedCookies, classifySessionObservation } from '../src/services/session_status.mjs';
 import { readSessionMeta, writeSessionMeta, markSessionLoggedIn, markSessionAlive, markSessionDead, parseMaskedAccount } from '../src/services/session_meta.mjs';
 import fs from 'node:fs';
 import os from 'node:os';
@@ -494,6 +494,20 @@ check('可续命的运营商 renewable=true',
 }
 check('能从页面正文解析脱敏号码', parseMaskedAccount('欢迎回来 178****6402 当前套餐') === '178****6402');
 check('正文里没有号码时返回 null', parseMaskedAccount('普通页面文本') === null);
+
+// ===== 9. 会话观测三态判定 =====
+// 背景（实测 2026-11-21）：会话状态此前只由巡检写入，手动刷新不写——
+// 用户重新扫码后手动刷新能抓到余额，界面却仍显示「未登录」。
+// 修复后由 refreshPlatformBalance 统一记录，判定必须区分三态。
+check('抓取成功 → 观测为存活', classifySessionObservation({ ok: true, balance: 75.9 }) === 'alive');
+check('跳登录页 → 观测为失效',
+  classifySessionObservation({ ok: false, error: '中国移动话费 未登录（跳转至 https://login.10086.cn/login.html）' }) === 'dead');
+check('跳登录页（另一种文案）→ 观测为失效',
+  classifySessionObservation({ ok: false, error: '中国电信话费 未登录（页面已无登录标识，余额显示为占位符）' }) === 'dead');
+check('与登录态无关的失败 → 观测未知（不改状态）',
+  classifySessionObservation({ ok: false, error: '中国移动话费: 页面中未找到余额（关键字="账户余额"）' }) === 'unknown');
+check('网络异常 → 观测未知', classifySessionObservation({ ok: false, error: 'net::ERR_CONNECTION_TIMED_OUT' }) === 'unknown');
+check('空结果 → 观测未知', classifySessionObservation(null) === 'unknown');
 
 const fail = results.filter((r) => !r.pass);
 console.log(`\n结果：共 ${results.length} 项，通过 ${results.length - fail.length}，失败 ${fail.length}`);

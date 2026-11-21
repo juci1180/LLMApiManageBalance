@@ -571,6 +571,65 @@ Playwright 默认把 `navigator.webdriver` 置为 `true`，189.cn 据此判定�
 回归测试：`scripts/test-carrier-balance.mjs` 152 项全通过（新增 10 项：锚点兜底、`deadAt`/`aliveSince`、
 两家都不可续命、`keepaliveFullScrape` 独立开关），`npm test` 48 项全通过。
 
+### 3.15 重新登录后仍显示「未登录」：会话状态只由巡检写入（2026-11-21）
+
+#### 现象
+
+用户在 13:09~13:12 重新登录三家后，**余额能抓到，界面却仍显示「未登录」**——两者自相矛盾。
+
+实测（修复前）：
+
+- `POST /api/platforms/5/refresh` → `{"ok":true,"balance":75.9}`
+- `POST /api/platforms/6/refresh` → `{"ok":true,"balance":54.61}`
+- `POST /api/platforms/7/refresh` → `{"ok":true,"balance":21.9}`
+- 但 `GET /api/carriers/session` → 三家全是 `state: "not_logged_in"`
+
+#### 根因
+
+会话状态存在数据库设置 `session_alive_<id>` 里，而**只有巡检（`monitor.js`）和保活会写它**。
+手动刷新走的路径（`routes.js` → `refreshPlatformBalance`）完全不写这个字段。
+
+于是：巡检在用户登录**之前**跑过一轮，报了「未登录」→ 写入 `session_alive_5 = 0`。
+用户随后重新登录、手动刷新成功抓到余额，但**没有任何一条路径把这个 0 翻回 1**，
+状态就永久钉在「未登录」。
+
+数据库现场印证（修复前）：`session_alive_5=1`、`session_alive_7=1`（被随后的保活翻回来了）、
+`session_alive_6=0`（电信保活间隔 20 分钟，尚未轮到）——**谁最后写谁说了算，与实际登录态无关**。
+
+#### 修复
+
+1. **写入点收敛到唯一共同入口**（`src/services/balance.js`）
+   `refreshPlatformBalance` 是手动刷新、巡检、到账后重查三条路径的**唯一共同所有者**，
+   会话观测改在这里记录 → 三条路径自动一致，判定口径只有一份。
+
+2. **判定改为三态**（`src/services/session_status.mjs`）
+   新增 `classifySessionObservation`：
+   - `alive`（抓到余额）→ 写 1
+   - `dead`（跳登录页）→ 写 0
+   - `unknown`（网络抖动、页面结构变化等与登录态无关的失败）→ **保留上一次观测值**
+
+   旧巡检实现是 `r.ok ? 1 : (dead ? 0 : 1)`——**任何失败都记成会话有效**，
+   网络抖动会掩盖真正的掉线。新实现区分三态，不让无关失败污染会话状态。
+
+3. **删掉 monitor 里的重复写入**（`src/services/monitor.js`）
+   巡检不再自己写 `session_alive_*`，避免出现两套口径不同的实现。
+
+4. **meta 补记**（`src/services/balance.js`）
+   `alive` 时补 `markSessionAlive`（桌面 Chrome CDP 回退路径原先不记，
+   导致「用户在自己浏览器登录」时没有倒计时锚点）；`dead` 时补 `markSessionDead`
+   （抓取失败路径原先不标失效，meta 里留着旧的「上次有效访问时刻」，
+   倒计时继续给乐观估计）。
+
+#### 验证（实测，非推断）
+
+- 修复前：三家手动刷新全部成功 → 接口仍报三家 `not_logged_in`
+- 修复后（服务带新代码重启）：
+  - 移动两家：启动巡检后自动翻回 `state: "ok"`，倒计时 27~28 分钟
+  - 电信：手动刷新后翻回 `state: "ok"`，倒计时 53 分钟
+  - 三家 `anchorSource` 均为 `login`（登录时刻已正确记录：13:09 / 13:12 / 13:10）
+- `scripts/test-carrier-balance.mjs` → **158 项全通过**（新增 6 项：三态判定）
+- `npm test` → **48 项全通过**
+
 #### 遗留限制（未变）
 
 三家仍需**约每小时重新扫码一次**——这是站点限制，不是实现缺陷。

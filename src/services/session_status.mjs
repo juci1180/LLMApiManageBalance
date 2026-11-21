@@ -223,3 +223,21 @@ export function buildSessionStatus({
     renewable: renewable === true,
   };
 }
+
+// 判定「本次访问观测到了会话的什么状态」。
+// 输入：一次余额查询的结果 { ok, balance?, error? }
+// 输出：
+//   'alive'   会话有效（抓到了余额）
+//   'dead'    会话已失效（服务端把我们送回登录页）
+//   'unknown' 与登录态无关的失败（网络抖动、页面结构变化等）——不能据此判断生死
+//
+// 为什么需要 'unknown'（实测 2026-11-21）：
+//   早先把任何失败都当成「会话有效」写入，于是网络抖动会掩盖真正的掉线；
+//   反过来把任何失败都当成「掉线」又会误报。判定必须区分这三态。
+export function classifySessionObservation(result) {
+  if (!result) return 'unknown';
+  if (result.ok === true) return 'alive';
+  const err = String(result.error || '');
+  if (/未登录|跳转登录页/.test(err)) return 'dead';
+  return 'unknown';
+}
