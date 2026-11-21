@@ -1,9 +1,10 @@
 #!/usr/bin/env node
 // 三大运营商个人卡余额：解析逻辑单元测试（不联网、不依赖真实网厅）
 // 覆盖：规则解析、内置规则套用、余额提取（多文案变体 / 负数 / 千分位 / 误命中防护）
-import { parseScrapeRule, enrichRuleWithBuiltin, extractBalance, CARRIER_RULES, CARRIER_ENTRY_URLS, SAFE_KEYWORD_BY_KEY, STORAGE_KEY_BY_NAME, detectCarrierLoggedIn, classifySessionState, BROWSER_ARGS, CARRIER_KEEPALIVE_MS, storageKeyFor, ruleKeyFor } from '../src/services/scraper_wallets.mjs';
-import { pickKeySessionCookie, buildSessionStatus, missingRequiredCookies, findDegradedCookies, classifySessionObservation } from '../src/services/session_status.mjs';
-import { readSessionMeta, writeSessionMeta, markSessionLoggedIn, markSessionAlive, markSessionDead, parseMaskedAccount } from '../src/services/session_meta.mjs';
+import { parseScrapeRule, enrichRuleWithBuiltin, extractBalance, CARRIER_RULES, CARRIER_ENTRY_URLS, SAFE_KEYWORD_BY_KEY, STORAGE_KEY_BY_NAME, detectCarrierLoggedIn, classifySessionState, BROWSER_ARGS, CARRIER_KEEPALIVE_MS, storageKeyFor, ruleKeyFor, balanceExtractionRule } from '../src/services/scraper_wallets.mjs';
+import { pickKeySessionCookie, buildSessionStatus, missingRequiredCookies, findDegradedCookies, classifySessionObservation, planStaggeredRelogin, describeDeadReason } from '../src/services/session_status.mjs';
+import { readSessionMeta, writeSessionMeta, markSessionLoggedIn, markSessionAlive, markSessionDead, markSessionKeepalive, parseMaskedAccount } from '../src/services/session_meta.mjs';
+import { redact } from '../src/services/logger.js';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
@@ -508,6 +509,143 @@ check('与登录态无关的失败 → 观测未知（不改状态）',
   classifySessionObservation({ ok: false, error: '中国移动话费: 页面中未找到余额（关键字="账户余额"）' }) === 'unknown');
 check('网络异常 → 观测未知', classifySessionObservation({ ok: false, error: 'net::ERR_CONNECTION_TIMED_OUT' }) === 'unknown');
 check('空结果 → 观测未知', classifySessionObservation(null) === 'unknown');
+
+// ===== 10. 首次失效时刻不被覆盖（2026-11-21 16:37） =====
+// 背景：用户问「多久掉的」时，deadAt 每次观测到失效都被覆盖，
+// 只能拿到最后一次确认时刻（差了两个多小时）。现在 deadAt 是首次失效时刻。
+{
+  const f = path.join(os.tmpdir(), `meta-dead-${process.pid}.json`);
+  try { fs.unlinkSync(f); } catch {}
+  markSessionLoggedIn(f);
+  const t1 = Date.now();
+  markSessionDead(f, '跳转登录页');
+  const m1 = readSessionMeta(f);
+  check('失效时记录了首次失效时刻', typeof m1.deadAt === 'number' && m1.deadAt >= t1);
+  check('失效时记录了最近一次确认时刻', typeof m1.lastDeadAt === 'number');
+  check('失效时记下了原因', m1.deadReason === '跳转登录页');
+  // 隔一会儿再观测到失效：不覆盖首次时刻，但更新最近确认时刻
+  const firstDead = m1.deadAt;
+  writeSessionMeta(f, { lastDeadAt: firstDead + 60000 });
+  const m2 = readSessionMeta(f);
+  check('后续观测不覆盖首次失效时刻', m2.deadAt === firstDead);
+  check('后续观测会更新最近确认时刻', m2.lastDeadAt === firstDead + 60000);
+  // 重新登录 = 新会话周期，失效时刻应清空
+  markSessionLoggedIn(f);
+  const m3 = readSessionMeta(f);
+  check('重新登录后清掉首次失效时刻', m3.deadAt === null && m3.lastDeadAt === null);
+  check('重新登录后清掉失效原因', m3.deadReason === null);
+  try { fs.unlinkSync(f); } catch {}
+}
+
+// ===== 11. 保活结果落到会话元信息 =====
+// 为什么要记（实测 2026-11-21）：原先保活异常只打一行日志，
+// 界面上与「保活根本没跑」长得一模一样，事后无法分辨。
+{
+  const f = path.join(os.tmpdir(), `meta-ka-${process.pid}.json`);
+  try { fs.unlinkSync(f); } catch {}
+  markSessionLoggedIn(f);
+  markSessionKeepalive(f, 'error', 'net::ERR_CONNECTION_REFUSED');
+  const m = readSessionMeta(f);
+  check('保活异常被记录', m.keepaliveState === 'error');
+  check('保活异常原因被记录', m.keepaliveReason === 'net::ERR_CONNECTION_REFUSED');
+  check('保活运行时刻被记录', typeof m.keepaliveAt === 'number');
+  markSessionKeepalive(f, 'dead', '服务端下发会话失效标记 ssoFail');
+  const m2 = readSessionMeta(f);
+  check('保活判定失效被记录', m2.keepaliveState === 'dead');
+  check('保活判定失效覆盖上一次异常状态', m2.keepaliveReason.includes('ssoFail'));
+  try { fs.unlinkSync(f); } catch {}
+}
+
+// ===== 11b. 保活状态与抓取状态必须分开（2026-11-21 实测发现的缺陷） =====
+// 实测：markSessionDead 早先一并写 keepaliveState='dead'，
+// 于是巡检刷新失败（也走 markSessionDead）会把 keepaliveAt 刷成刷新时刻——
+// 界面于是显示「保活判定失效」，而实际上保活根本没判定过失效。
+// 这两个链路必须互不干扰，否则「保活跑没跑」就分不清了。
+{
+  const f = path.join(os.tmpdir(), `meta-sep-${process.pid}.json`);
+  try { fs.unlinkSync(f); } catch {}
+  markSessionLoggedIn(f);
+  markSessionKeepalive(f, 'alive', null);
+  const before = readSessionMeta(f);
+  check('保活成功状态已记录', before.keepaliveState === 'alive');
+  // 抓取路径判定失效（巡检刷新失败）
+  markSessionDead(f, '跳转登录页');
+  const after = readSessionMeta(f);
+  check('抓取判定失效不改动保活状态', after.keepaliveState === 'alive');
+  check('抓取判定失效不改动保活时刻', after.keepaliveAt === before.keepaliveAt);
+  check('抓取判定失效照样记录了会话失效', after.deadAt !== null && after.deadReason === '跳转登录页');
+  // 反过来：保活判定失效也不应篡改会话失效原因
+  markSessionKeepalive(f, 'dead', '页面已无登录标识');
+  const after2 = readSessionMeta(f);
+  check('保活判定失效不篡改会话失效原因', after2.deadReason === '跳转登录页');
+  check('保活判定失效记录了自己的原因', after2.keepaliveReason === '页面已无登录标识');
+  try { fs.unlinkSync(f); } catch {}
+}
+
+// ===== 12. 错峰重登计划 =====
+// 背景（实测 2026-11-21）：三家先后扫码登录，寿命都从各自登录时刻起算，
+// 失效时刻只差几分钟，会连着掉。错峰要把相邻两家的建议重登时刻拉开。
+{
+  const NOW = 1_700_000_000_000;
+  const maxAge = 60 * 60 * 1000;
+  const plan = planStaggeredRelogin([
+    { platformId: 7, name: 'C', anchorAt: NOW - 50 * 60 * 1000, maxAgeMs: maxAge },
+    { platformId: 5, name: 'A', anchorAt: NOW - 55 * 60 * 1000, maxAgeMs: maxAge },
+    { platformId: 6, name: 'B', anchorAt: NOW - 52 * 60 * 1000, maxAgeMs: maxAge },
+  ], { now: NOW, staggerMs: 20 * 60 * 1000 });
+  check('错峰计划按失效先后排序', plan[0].platformId === 5 && plan[1].platformId === 6 && plan[2].platformId === 7,
+    plan.map((p) => `${p.name}(${p.order})`).join(' '));
+  check('错峰计划给出序号', plan.map((p) => p.order).join(',') === '1,2,3');
+  const gap1 = plan[1].suggestedReloginAt - plan[0].suggestedReloginAt;
+  const gap2 = plan[2].suggestedReloginAt - plan[1].suggestedReloginAt;
+  check('相邻两家的建议重登时刻已拉开', gap1 >= 20 * 60 * 1000 && gap2 >= 20 * 60 * 1000,
+    `间隔 ${Math.round(gap1 / 60000)}/${Math.round(gap2 / 60000)} 分钟`);
+  check('建议重登时刻不早于自己的失效时刻',
+    plan.every((p) => p.suggestedReloginAt >= p.expiryAt));
+  // 已过期的（失效时刻在过去）→ 建议时刻不早于“现在”
+  const pastPlan = planStaggeredRelogin([
+    { platformId: 5, name: 'A', anchorAt: NOW - 120 * 60 * 1000, maxAgeMs: maxAge },
+  ], { now: NOW, staggerMs: 20 * 60 * 1000 });
+  check('已失效的建议重登时刻不早于现在', pastPlan[0].suggestedReloginAt >= NOW);
+  // 未标定窗口的排在最后
+  const mixed = planStaggeredRelogin([
+    { platformId: 9, name: '未标定', anchorAt: NOW, maxAgeMs: null },
+    { platformId: 5, name: 'A', anchorAt: NOW, maxAgeMs: maxAge },
+  ], { now: NOW, staggerMs: 20 * 60 * 1000 });
+  check('未标定会话窗口的排在最后', mixed[mixed.length - 1].platformId === 9);
+}
+
+// ===== 13. 日志落盘：长 token 打码 =====
+// 为什么要打码：日志里可能出现 cookie 值、票据等长串凭据，
+// 不能把原文写进日志文件。
+check('长 token 被打码', redact('chargeresource=abcdefghijklmnopqrstuvwxyz0123456789ABCDEFGHIJ').includes('***('));
+check('普通文案不受影响', redact('中国移动话费 会话已失效（跳转登录页）') === '中国移动话费 会话已失效（跳转登录页）');
+check('短串不被误伤', redact('chargeresource=abc123') === 'chargeresource=abc123');
+
+// ===== 14. 运营商余额提取规则 =====
+// 为什么需要：extractBalance 认 keywords，而 CARRIER_RULES 里存的是 balanceKeywords，
+// 直接丢进去会静默取不到余额（保活就白访问了一次网厅）。
+{
+  const cmccRule = balanceExtractionRule(CARRIER_RULES.carrier_cmcc);
+  check('提取规则带上了关键字组', Array.isArray(cmccRule.keywords) && cmccRule.keywords.includes('可用余额'));
+  check('提取规则带上了正则', typeof cmccRule.regex === 'string' && cmccRule.regex.length > 0);
+  const ctRule = balanceExtractionRule(CARRIER_RULES.carrier_ct);
+  check('电信提取规则标记了「数值在前」', ctRule.valueBeforeLabel === true);
+  check('电信提取规则能取出余额', extractBalance('54.61元\n账户余额', ctRule) === 54.61);
+  check('移动提取规则能取出余额', extractBalance('可用余额 70.90元', cmccRule) === 70.9);
+}
+
+// ===== 15. 失效原因提取 =====
+// 为什么需要（实测 2026-11-21 16:37）：用户问「多久掉的」，
+// 界面上只写「未登录」，答不了；要能说出「什么时候掉的」与「为什么掉的」。
+check('跳登录页 → 跳转登录页',
+  describeDeadReason('中国移动话费 未登录（跳转至 https://login.10086.cn/login.html）') === '跳转登录页');
+check('正文无登录标识 → 页面已无登录标识',
+  describeDeadReason('中国电信话费 未登录（页面已无登录标识，余额显示为占位符）') === '页面已无登录标识');
+check('服务端失效标记 → 服务端下发会话失效标记',
+  describeDeadReason('中国移动话费 会话已失效（服务端下发会话失效标记 ssoFail）') === '服务端下发会话失效标记');
+check('其他文案 → 归为会话已失效', describeDeadReason('网络异常') === '会话已失效');
+check('空文案 → 归为会话已失效', describeDeadReason('') === '会话已失效');
 
 const fail = results.filter((r) => !r.pass);
 console.log(`\n结果：共 ${results.length} 项，通过 ${results.length - fail.length}，失败 ${fail.length}`);

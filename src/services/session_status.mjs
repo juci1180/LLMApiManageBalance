@@ -241,3 +241,58 @@ export function classifySessionObservation(result) {
   if (/未登录|跳转登录页/.test(err)) return 'dead';
   return 'unknown';
 }
+
+// 从错误文案里提取简短的失效原因（给界面显示用）。
+// 例：「中国移动话费 未登录（跳转至 https://login.10086.cn/...）」
+//   → 「跳转登录页」
+//   「中国电信话费 未登录（页面已无登录标识，余额显示为占位符）」
+//   → 「页面已无登录标识」
+export function describeDeadReason(error) {
+  const err = String(error || '');
+  if (!err) return '会话已失效';
+  if (/页面已无登录标识/.test(err)) return '页面已无登录标识';
+  if (/服务端下发会话失效标记/.test(err)) return '服务端下发会话失效标记';
+  if (/跳转登录页|跳转至/.test(err)) return '跳转登录页';
+  if (/未登录/.test(err)) return '未登录';
+  return '会话已失效';
+}
+
+// 算错峰重登计划。
+//
+// 为什么需要（实测 2026-11-21）：三家是先后扫码登录的，寿命都从各自登录时刻起算
+// （约 60 分钟），所以失效时刻只差几分钟，会连着掉——用户得连着扫三次码。
+// 错峰的做法是：按失效先后排顺序，并给每家一个**错开的建议重登时刻**
+// （相邻两家之间至少间隔 staggerMs），这样下一轮的三家失效时刻就自然拉开了。
+//
+// 输入 items：
+//   { platformId, name, anchorAt, maxAgeMs }
+//     anchorAt  = 会话计时起点（登录时刻；缺失时用会话恢复有效的时刻）
+//     maxAgeMs  = 实测的会话窗口长度（null 表示未标定）
+// 输入 now：当前时刻
+// 输出：按建议重登时刻排序的数组，每项 { platformId, name, expiryAt, suggestedReloginAt, order }
+//   order 从 1 开始，直接就是「下一个该重登谁」。
+export function planStaggeredRelogin(items, { now = Date.now(), staggerMs = 20 * 60 * 1000 } = {}) {
+  const list = (items || [])
+    .map((it) => {
+      const expiryAt = it.anchorAt && it.maxAgeMs ? it.anchorAt + it.maxAgeMs : null;
+      return { ...it, expiryAt, suggestedReloginAt: null, order: 0 };
+    })
+    // 排序：失效时刻早的在前；没标定窗口的排在最后（无法推算）
+    .sort((a, b) => {
+      if (a.expiryAt == null && b.expiryAt == null) return (a.platformId || 0) - (b.platformId || 0);
+      if (a.expiryAt == null) return 1;
+      if (b.expiryAt == null) return -1;
+      return a.expiryAt - b.expiryAt;
+    });
+  let prev = null;
+  for (const it of list) {
+    // 建议重登时刻：不早于本家自己的失效时刻（失效了就得现在重登），
+    // 也不早于上一家的建议时刻 + 间隔（把三家拉开）。
+    const base = it.expiryAt == null ? now : Math.max(it.expiryAt, now);
+    const slot = prev == null ? base : Math.max(base, prev + staggerMs);
+    it.suggestedReloginAt = slot;
+    prev = slot;
+  }
+  list.forEach((it, i) => { it.order = i + 1; });
+  return list;
+}

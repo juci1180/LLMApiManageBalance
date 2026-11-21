@@ -91,8 +91,10 @@
         <div style="display:flex; justify-content:space-between; align-items:center;">
           <h2 style="margin:0;">大模型平台</h2>
           <button id="login-all-btn" onclick="openLoginAll()" style="display:none; background:#7c3aed; color:#fff; border:none; border-radius:6px; padding:6px 12px; cursor:pointer; font-size:13px;">🔑 全部一键登录</button>
+          <button id="relogin-stagger-btn" onclick="openStaggeredRelogin()" style="display:none; background:#ea580c; color:#fff; border:none; border-radius:6px; padding:6px 12px; cursor:pointer; font-size:13px; margin-left:8px;">🕐 按顺序重登</button>
         </div>
         <div id="alert-bar" class="alert-bar hidden"></div>
+        <div id="push-notice" class="hidden" style="background:#fff7ed; border:1px solid #fed7aa; border-radius:8px; padding:8px 14px; margin-top:12px; font-size:13px; color:#9a3412; line-height:1.7;"></div>
         <div id="monitor-result" class="hidden" style="background:#f0fdf4;border:1px solid #bbf7d0;border-radius:8px;padding:8px 14px;margin-top:12px;font-size:13px;color:#166534;"></div>
         <div style="display:flex; gap:8px; flex-wrap:wrap; align-items:center; margin-top:8px;" id="quick-add-bar">
           <span style="font-size:13px; color:#6b7280;">⚡ 快速添加：</span>
@@ -469,25 +471,81 @@
       return `${p2(m)}:${p2(sec)}`;
     }
 
+    // 格式化一个绝对时刻（用于「首次失效时刻」这类静态信息）
+    function fmtMoment(ts) {
+      if (!ts) return '—';
+      const d = new Date(ts);
+      const p2 = (n) => String(n).padStart(2, '0');
+      return `${d.getFullYear()}-${p2(d.getMonth() + 1)}-${p2(d.getDate())} ${p2(d.getHours())}:${p2(d.getMinutes())}`;
+    }
+
+    // 保活状态的说明文案。
+    // 为什么要区分三种（实测 2026-11-21）：
+    //   'error' = 保活跑了但抛异常（网厅打不开、浏览器起不来）
+    //   'dead'  = 保活访问成功，但服务端判定会话已失效
+    //   'alive' = 保活访问成功且会话仍有效
+    //   没有 keepaliveAt = 保活从未成功跑过（服务没在跑 / 刚重启）
+    // 这四种以前在界面上长得一模一样，事后无法分辨。
+    function keepaliveNote(s) {
+      if (!s.keepaliveAt) {
+        return { text: '保活尚未运行', tip: '保活从未成功跑过：服务可能刚重启，或保活没启动' };
+      }
+      if (s.keepaliveState === 'error') {
+        return {
+          text: '保活异常',
+          tip: `保活最近一次运行抛了异常（${s.keepaliveReason || '原因未知'}）：${fmtMoment(s.keepaliveAt)}。这不等于会话失效，但说明保活没能正常访问网厅`,
+        };
+      }
+      if (s.keepaliveState === 'dead') {
+        return {
+          text: '保活判定失效',
+          tip: `保活最近一次访问判定会话已失效：${fmtMoment(s.keepaliveAt)}`,
+        };
+      }
+      return {
+        text: '保活正常',
+        tip: `保活最近一次访问成功且会话有效：${fmtMoment(s.keepaliveAt)}`,
+      };
+    }
+
     function renderCarrierSessions() {
       const now = Date.now();
       document.querySelectorAll('.sess-box').forEach((box) => {
         const pid = Number(box.dataset.pid);
         const s = carrierSessions[pid];
         if (!s) { box.innerHTML = ''; return; }
+        const ka = keepaliveNote(s);
+        // 错峰重登建议：什么时候该登这一家（相邻两家之间已拉开 20 分钟）
+        const staggerLine = s.suggestedReloginAt
+          ? `<div class="sess-line sess-dim" title="错峰重登建议：按失效先后排序，相邻两家至少间隔 20 分钟，避免连着掉">第 ${s.reloginOrder} 个重登 · 建议 ${fmtMoment(s.suggestedReloginAt)}</div>`
+          : '';
         if (s.state === 'not_logged_in') {
-          box.innerHTML = '<div class="sess-line sess-bad">未登录</div>';
+          // 已失效：直接告诉用户「什么时候掉的」与「为什么」，
+          // 而不是只说一句「未登录」（实测 2026-11-21：用户只能来问「多久掉的」）
+          const deadInfo = s.deadAt
+            ? `<div class="sess-line sess-dim">${fmtMoment(s.deadAt)} 失效${s.deadReason ? '（' + esc(s.deadReason) + '）' : ''}</div>`
+            : '';
+          box.innerHTML =
+            '<div class="sess-line sess-bad">未登录</div>' +
+            deadInfo +
+            staggerLine +
+            `<div class="sess-line sess-dim" title="${esc(ka.tip)}">${esc(ka.text)}</div>`;
           return;
         }
         if (s.state === 'expired') {
-          box.innerHTML = '<div class="sess-line sess-bad">已过期，需重新登录</div>';
+          box.innerHTML =
+            '<div class="sess-line sess-bad">已过期，需重新登录</div>' +
+            staggerLine +
+            `<div class="sess-line sess-dim" title="${esc(ka.tip)}">${esc(ka.text)}</div>`;
           return;
         }
         if (s.state === 'expiring') {
           // 即将失效：提醒用户尽快重新登录（移动这类会话保活续不回来）
           box.innerHTML =
             '<div class="sess-line sess-warn">即将失效，请重新登录</div>' +
-            `<div class="sess-line sess-dim">预计存活 <b>${fmtCountdown(s.expiresAt ? s.expiresAt - now : null)}</b></div>`;
+            `<div class="sess-line sess-dim">预计存活 <b>${fmtCountdown(s.expiresAt ? s.expiresAt - now : null)}</b></div>` +
+            staggerLine +
+            `<div class="sess-line sess-dim" title="${esc(ka.tip)}">${esc(ka.text)}</div>`;
           return;
         }
         if (s.state === 'uncalibrated') {
@@ -512,7 +570,9 @@
         const acct = s.account ? `　绑定号码 ${s.account}` : '';
         box.innerHTML =
           `<div class="sess-line" title="${esc(tip)}">预计存活 <b>${fmtCountdown(ttl)}</b>${esc(acct)}</div>` +
-          `<div class="sess-line" title="${esc(renewTip)}">下次检查 <b>${fmtCountdown(renew)}</b></div>`;
+          `<div class="sess-line" title="${esc(renewTip)}">下次检查 <b>${fmtCountdown(renew)}</b></div>` +
+          staggerLine +
+          `<div class="sess-line sess-dim" title="${esc(ka.tip)}">${esc(ka.text)}</div>`;
       });
     }
 
@@ -523,9 +583,36 @@
         for (const s of (r.sessions || [])) carrierSessions[s.platform_id] = s;
         carrierSessionsFetchedAt = Date.now();
         renderCarrierSessions();
+        renderPushNotice(r.pushConfigured);
+        renderReloginBtn();
       } catch (e) {
         // 运营商会话接口不可用不影响主列表，静默处理
       }
+    }
+
+    // 推送通道未配置的提示。
+    // 为什么必须显眼（实测 2026-11-21）：预警逻辑一直是对的，
+    // 但 config.json 里 notify.serverchan / notify.bark 都是空的，
+    // 提醒只落在服务日志里，手机上一条也没收到——
+    // 用户只能盯着界面，然后来问「多久掉的」。
+    // 这个提示的作用就是把「收不到提醒」这件事讲清楚，而不是让用户去猜。
+    function renderPushNotice(configured) {
+      const el = document.querySelector('#push-notice');
+      if (!el) return;
+      if (configured) { el.classList.add('hidden'); el.innerHTML = ''; return; }
+      el.classList.remove('hidden');
+      el.innerHTML =
+        '🔔 <b>手机推送未配置</b>：会话「即将失效」「已失效」的提醒目前只写在服务日志里，手机收不到。' +
+        '运营商网厅的会话约 60 分钟就会失效（访问续不回来），' +
+        '所以你需要盯着界面，或在 <code>config.json</code> 里填上 Server酱 SendKey / Bark 地址后自动生效。';
+    }
+
+    // 「按顺序重登」按钮：只在有运营商实例时显示
+    function renderReloginBtn() {
+      const btn = document.querySelector('#relogin-stagger-btn');
+      if (!btn) return;
+      const has = Object.values(carrierSessions).length > 0;
+      btn.style.display = has ? '' : 'none';
     }
     function renderPlatforms() {
       const list = platformsCache;
@@ -918,6 +1005,41 @@
         }
       } catch (e) {
         if (btn) { btn.disabled = false; btn.textContent = '🔑 全部一键登录'; }
+        alert('启动登录失败：' + e.message);
+      }
+    }
+
+    // 错峰重登：按「建议重登时刻」排序逐个弹窗口
+    // 为什么需要（实测 2026-11-21）：三家是先后扫码登录的，寿命都从各自登录时刻起算
+    // （约 60 分钟），失效时刻只差几分钟，会连着掉——用户得连着扫三次码。
+    // 错峰后三家失效时刻自然拉开，一次只需要处理一家的提醒。
+    async function openStaggeredRelogin() {
+      const btn = document.querySelector('#relogin-stagger-btn');
+      const ids = Object.values(carrierSessions)
+        .filter(s => s.reloginOrder)
+        .sort((a, b) => a.reloginOrder - b.reloginOrder)
+        .map(s => s.platform_id);
+      if (!ids.length) { alert('没有需要重新登录的运营商实例'); return; }
+      const names = ids.map(id => carrierSessions[id].name).join(' → ');
+      if (!confirm('将按下面的顺序逐个弹出登录窗口（扫完一个自动弹下一个）：\n\n' + names + '\n\n确定开始吗？')) return;
+      if (btn) { btn.disabled = true; btn.textContent = '登录中...'; }
+      try {
+        const r = await api('/api/login/run', { method:'POST', body:{ platforms: ids } });
+        alert(r.message || '登录窗口已打开');
+        if (r.running) {
+          const timer = setInterval(async () => {
+            try {
+              const s = await api('/api/login/status');
+              if (!s.running) {
+                clearInterval(timer);
+                if (btn) { btn.disabled = false; btn.textContent = '🕐 按顺序重登'; }
+                showLoginResult();
+              }
+            } catch {}
+          }, 3000);
+        }
+      } catch (e) {
+        if (btn) { btn.disabled = false; btn.textContent = '🕐 按顺序重登'; }
         alert('启动登录失败：' + e.message);
       }
     }

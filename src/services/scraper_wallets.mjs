@@ -811,12 +811,30 @@ export function classifySessionState({ url = '', text = '', cookies = [], rule =
   return { loggedIn: true, reason: '' };
 }
 
+// 从运营商规则里拼出「余额提取规则」
+// 为什么需要：extractBalance 认的是 { keyword, keywords, regex, ... }，
+// 而 CARRIER_RULES 里关键词存放在 balanceKeywords、值前布局存在 valueBeforeLabel，
+// 直接把整个规则丢进去，兜底的关键词路径会因为拿不到 keywords 而静默返回 null。
+export function balanceExtractionRule(rule) {
+  if (!rule) return {};
+  const kws = Array.isArray(rule.balanceKeywords) ? rule.balanceKeywords : null;
+  return {
+    keyword: kws ? kws[0] : rule.keyword,
+    keywords: kws,
+    regex: rule.regex || null,
+    exclude: rule.exclude || null,
+    valueBeforeLabel: rule.valueBeforeLabel === true,
+    max: rule.max,
+  };
+}
+
 // 运营商会话续期（保活）：只访问网厅首页触发服务端滑动续期，并把续期后的 cookie 写回。
 // 与抓取余额的区别：
-//   - 不提取余额、不写 balance_history、不触发充值单（保活每 10 分钟跑一次，
-//     若走余额刷新会污染历史数据并让阈值判断频繁触发）；
-//   - 只访问入口页，不点菜单进余额子页——续期只需要「带着会话访问一次」。
-// 返回 { ok, loggedIn }：loggedIn=false 表示会话已失效（需要用户重新登录）。
+//   - 不写 balance_history、不触发充值单（保活每 10 分钟跑一次，
+//     若每次都写历史会污染数据并让阈值判断频繁触发）；
+//   - 但**顺带把余额读出来**返回（见下方 balance）：保活本来就在访问网厅，
+//     顺手取到的余额几乎不花额外代价，却能让余额不再依赖巡检恰好落在会话存活窗口内。
+// 返回 { ok, loggedIn, balance }：loggedIn=false 表示会话已失效（需要用户重新登录）。
 export async function renewCarrierSession({ url, storageFile, rule, keywords, debugLabel = '运营商' }) {
   const headless = rule?.headlessBlocked !== true;
   const browser = await chromium.launch(launchOptions({ headless }));
@@ -826,19 +844,36 @@ export async function renewCarrierSession({ url, storageFile, rule, keywords, de
     try {
       await page.goto(url, { waitUntil: 'domcontentloaded', timeout: 45000 }).catch(() => {});
       await page.waitForTimeout(6000);
+      const readText = async () => await page.evaluate(() => (document.body ? document.body.innerText : '')).catch(() => '');
+      let text = await readText();
       // 「可续命」的运营商（如电信）：只访问入口页未必能触发票据换发。
       // 实测能换发的是**完整抓取**那条路径（进余额模块），保活必须走同一条路。
       // 注意（2026-11-21 复核）：走完整路径也**没能**延长会话寿命，
       // 它的价值只是「多一次刷新票据的机会」，不代表续命成功。
       // 所以这里的开关改用独立的 keepaliveFullScrape，不再挂在 sessionRenewable 上
       // （sessionRenewable 现在两家都是 false，否则保活会退化成只访问入口页）。
-      if (rule?.keepaliveFullScrape === true && Array.isArray(rule.entries) && rule.entries.length) {
-        for (const entry of rule.entries.slice(0, 4)) {
+      const entries = Array.isArray(rule?.entries) ? rule.entries : [];
+      if (rule?.keepaliveFullScrape === true && entries.length) {
+        for (const entry of entries.slice(0, 4)) {
           if (!(await clickByText(page, entry, 5000))) continue;
           await page.waitForTimeout(2500);
         }
+        text = await readText();
       }
-      const text = await page.evaluate(() => (document.body ? document.body.innerText : '')).catch(() => '');
+      // 顺带取余额：能取到就返回，取不到不算失败（会话判定才是保活的本职）。
+      // 移动的首页不一定直接带余额，取不到时再点一次菜单入口试试
+      // （无头窗口，不弹窗，不增加打扰）。
+      const exRule = balanceExtractionRule(rule);
+      let balance = extractBalance(text, exRule);
+      if (balance === null && entries.length && rule?.keepaliveFullScrape !== true) {
+        for (const entry of entries.slice(0, 4)) {
+          if (!(await clickByText(page, entry, 5000))) continue;
+          await page.waitForTimeout(2500);
+          text = await readText();
+          balance = extractBalance(text, exRule);
+          if (balance !== null) break;
+        }
+      }
       const currentUrl = page.url();
       // 会话是否还有效：跳登录页 / 服务端失效标记 / 正文已无登录标识
       // 三种情况都不能只看 URL——实测移动与电信失效后 URL 都不变
@@ -846,7 +881,7 @@ export async function renewCarrierSession({ url, storageFile, rule, keywords, de
       const state = classifySessionState({ url: currentUrl, text, cookies, rule, keywords });
       if (!state.loggedIn) {
         // 会话已失效：清掉「上次有效访问时刻」，倒计时不再给乐观估计
-        markSessionDead(storageFile);
+        markSessionDead(storageFile, state.reason);
         return { ok: false, loggedIn: false, url: currentUrl, reason: state.reason };
       }
       const persisted = await persistStorageState(context, storageFile, { requiredCookies: rule?.sessionRequiredCookies || null });
@@ -855,7 +890,7 @@ export async function renewCarrierSession({ url, storageFile, rule, keywords, de
       // 但仍要记录这次有效访问：它是「会话目前还活着」的地面真相，
       // 也是「用户重新登录了但没走我们的脚本」时倒计时锚点的来源。
       markSessionAlive(storageFile);
-      return { ok: persisted, loggedIn: true, url: currentUrl, textLength: text.length };
+      return { ok: persisted, loggedIn: true, url: currentUrl, textLength: text.length, balance };
     } finally {
       try { await page.close(); } catch {}
       try { await context.close(); } catch {}

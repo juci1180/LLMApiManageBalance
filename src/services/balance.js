@@ -5,7 +5,7 @@ import db from '../db/index.js';
 import { createHash, createHmac } from 'node:crypto';
 import { scrapeMiniMaxBalance } from './scraper_minimax.mjs';
 import { scrapeWalletBalance, parseScrapeRule, storageFileFor, storageKeyFor, enrichRuleWithBuiltin, CARRIER_ENTRY_URLS } from './scraper_wallets.mjs';
-import { classifySessionObservation } from './session_status.mjs';
+import { classifySessionObservation, describeDeadReason } from './session_status.mjs';
 import { markSessionAlive, markSessionDead } from './session_meta.mjs';
 
 // 火山引擎 OpenAPI 签名（HMAC-SHA256，类似 AWS SigV4）
@@ -444,7 +444,9 @@ export function recordSessionObservation(platform, result) {
     setSetting(key, 0);
     // 抓取失败时抓取器不会标失效，这里补记——否则 meta 里会留着旧的
     // 「上次有效访问时刻」，倒计时继续给乐观估计。
-    if (storageFile) markSessionDead(storageFile);
+    // 原因一并记上：界面上要能回答「为什么掉的」，
+    // 不用再翻服务日志（实测 2026-11-21：日志不落盘，什么都查不到）。
+    if (storageFile) markSessionDead(storageFile, describeDeadReason(result?.error));
   }
 }
 
@@ -463,6 +465,43 @@ export function markQueried(platformId, ok) {
       "UPDATE platforms SET last_query_at = ?, last_query_status = 'fail' WHERE id = ?"
     ).run(now, platformId);
   }
+}
+
+// 记录一次「保活顺带取到的余额」。
+//
+// 为什么金额没变就不写历史（实测 2026-11-21）：
+//   保活每 10 分钟跑一次（移动）/ 20 分钟（电信）。若每次都写一条 balance_history，
+//   历史表会被同金额的重复记录刷满，余额变化曲线被噪声淹没，
+//   「这笔钱什么时候花的」也就看不出来。
+//   所以：金额变了才写历史；金额没变只更新「最后查询」时刻。
+//
+// 为什么保活取到的余额也算「查询成功」：
+//   保活确实访问了网厅、确实读到了余额，这就是一次真实的余额查询。
+//   之前余额只能靠巡检（周期 1 小时）更新，而会话寿命也只有约 60 分钟——
+//   巡检很容易整个落在会话失效之后，于是「多久没查成」的标黄/标红会误报。
+//   让保活也参与计数，余额的新鲜度就不再取决于巡检是否恰好赶上会话还活着。
+export function recordBalanceIfChanged(platformId, balance, currency) {
+  if (balance == null || !Number.isFinite(Number(balance))) return { changed: false };
+  const value = Number(balance);
+  const latest = db.prepare(
+    'SELECT balance FROM balance_history WHERE platform_id = ? ORDER BY id DESC LIMIT 1'
+  ).get(platformId);
+  const changed = !latest || latest.balance === null || Math.abs(Number(latest.balance) - value) > 1e-9;
+  if (changed) {
+    db.prepare(
+      'INSERT INTO balance_history (platform_id, balance, currency) VALUES (?, ?, ?)'
+    ).run(platformId, value, currency);
+    // 余额历史保留上限（与 refreshPlatformBalance 一致）
+    db.prepare(`
+      DELETE FROM balance_history WHERE platform_id = ? AND id NOT IN (
+        SELECT id FROM balance_history WHERE platform_id = ? ORDER BY id DESC LIMIT 500
+      )
+    `).run(platformId, platformId);
+  }
+  // 无论金额变没变，这次都是一次成功查询：更新「最后查询」与错误标记
+  db.prepare('UPDATE platforms SET latest_error = NULL WHERE id = ?').run(platformId);
+  markQueried(platformId, true);
+  return { changed, balance: value };
 }
 
 export async function refreshPlatformBalance(platformId) {

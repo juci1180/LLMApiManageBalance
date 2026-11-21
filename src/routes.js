@@ -11,7 +11,8 @@ import fs from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { dirname, join } from 'node:path';
 import { storageKeyFor, storageFileFor, CARRIER_RULES, CARRIER_KEEPALIVE_MS, ruleKeyFor } from './services/scraper_wallets.mjs';
-import { buildSessionStatus } from './services/session_status.mjs';
+import { buildSessionStatus, planStaggeredRelogin } from './services/session_status.mjs';
+import { hasPhoneNotify } from './services/push.js';
 import { readSessionMeta } from './services/session_meta.mjs';
 import { computeQueryStatus } from './services/query_status.mjs';
 
@@ -54,6 +55,12 @@ export async function registerRoutes(fastify) {
   fastify.get('/api/login/status', async () => ({ running: loginRunning }));
 
   // 拉起登录脚本（弹浏览器窗口；不阻塞等待，用户完成登录后脚本自行退出）
+  //
+  // 登录完成后自动抓一次余额（实测 2026-11-21）：
+  //   此前登录脚本存好登录态就结束了，界面上的余额还是上一次巡检留下的旧数。
+  //   而巡检周期正好是 1 小时、跟会话寿命（约 60 分钟）一样长，
+  //   很容易整个撞在会话刚失效的窗口里——用户看到的是「抓取失败」而不是新余额。
+  //   把「登录」与「余额更新」合成一个动作，用户就不用再点一次「刷新余额」。
   fastify.post('/api/login/run', async (req) => {
     if (loginRunning) {
       return { running: true, message: '已有登录流程正在运行，请先在弹出的窗口完成登录' };
@@ -64,23 +71,57 @@ export async function registerRoutes(fastify) {
       const row = db.prepare('SELECT * FROM platforms WHERE id = ? OR name = ?').get(b.platform, b.platform);
       platform = row || null;
     }
+    // 错峰重登：body.platforms 指定本次要登的平台与顺序（按建议重登时刻排好）
     const args = ['scripts/wallet-login.mjs'];
-    if (platform) args.push(storageKeyForPlatform(platform));
+    let loginTargets = [];
+    if (Array.isArray(b.platforms) && b.platforms.length) {
+      for (const id of b.platforms) {
+        const row = db.prepare('SELECT * FROM platforms WHERE id = ?').get(id);
+        if (row) loginTargets.push(row);
+      }
+      // 登录脚本按参数顺序逐个弹窗口，所以参数顺序 = 用户应重登的顺序
+      for (const row of loginTargets) args.push(storageKeyForPlatform(row));
+    } else if (platform) {
+      loginTargets = [platform];
+      args.push(storageKeyForPlatform(platform));
+    }
     loginRunning = true;
     try {
       // 脚本输出记录到日志文件，前端可查询登录结果
       fs.mkdirSync(dirname(LOGIN_LOG), { recursive: true });
-      fs.writeFileSync(LOGIN_LOG, `[${new Date().toLocaleString()}] 开始登录：${platform ? platform.name : '全部浏览器抓取型平台'}\n`);
+      const scopeName = loginTargets.length
+        ? loginTargets.map((r) => r.name).join('、')
+        : '全部浏览器抓取型平台';
+      fs.writeFileSync(LOGIN_LOG, `[${new Date().toLocaleString()}] 开始登录：${scopeName}\n`);
       const out = fs.openSync(LOGIN_LOG, 'a');
       const child = spawn(process.execPath, args, { cwd: PROJECT_ROOT, detached: true, stdio: ['ignore', out, out] });
-      child.on('exit', () => { loginRunning = false; try { fs.closeSync(out); } catch {} });
+      const finish = async () => {
+        try { fs.closeSync(out); } catch {}
+        // 登录脚本退出 = 用户扫完码了 → 立刻抓一次余额，把界面上的旧数换成新数
+        try {
+          for (const row of loginTargets) {
+            const r = await refreshPlatformBalance(row.id);
+            console.log(
+              `[login] ${row.name} 登录后自动抓余额：` +
+              (r.ok ? `成功 ${r.balance}` : `失败 ${r.error}`)
+            );
+          }
+        } catch (err) {
+          console.warn(`[login] 登录后自动抓余额失败: ${err.message}`);
+        }
+        // 抓完才把「登录中」标记清掉：前端轮询到结束后刷新，看到的就是新余额
+        loginRunning = false;
+      };
+      child.on('exit', () => { finish(); });
       child.on('error', () => { loginRunning = false; try { fs.closeSync(out); } catch {} });
       child.unref();
       return {
         running: true,
-        message: platform
-          ? `已打开「${platform.name}」的登录窗口，请在弹出的浏览器里完成登录；登录成功会自动保存并关闭`
-          : '已打开登录窗口，请按顺序完成各平台登录',
+        message: loginTargets.length === 1
+          ? `已打开「${loginTargets[0].name}」的登录窗口，请在弹出的浏览器里完成登录；登录成功会自动保存并关闭`
+          : (loginTargets.length
+            ? `已按重登顺序打开 ${loginTargets.length} 个登录窗口，请逐个完成登录`
+            : '已打开登录窗口，请按顺序完成各平台登录'),
       };
     } catch (err) {
       loginRunning = false;
@@ -163,10 +204,47 @@ export async function registerRoutes(fastify) {
         // 倒计时锚点来源：'login' = 登录脚本记录的登录时刻；
         // 'revived' = 会话恢复有效的时刻（用户自行扫码登录，脚本没记录）
         anchorSource: status.anchorSource || null,
+        // 首次确认失效的时刻（不被后续观测覆盖）——「多久掉的」直接看这个
+        deadAt: meta?.deadAt || null,
+        // 最近一次确认失效的时刻
+        lastDeadAt: meta?.lastDeadAt || null,
+        // 失效原因（跳登录页 / 服务端失效标记 / 页面已无登录标识）
+        deadReason: meta?.deadReason || null,
+        // 保活最近一次运行的结果：'alive' / 'dead' / 'error'
+        // 与「保活根本没跑」的区别：keepaliveAt 为空就说明保活从没成功跑过
+        keepaliveState: meta?.keepaliveState || null,
+        keepaliveAt: meta?.keepaliveAt || null,
+        keepaliveReason: meta?.keepaliveReason || null,
         ...status,
       });
     }
-    return { sessions, now: Date.now() };
+    // 错峰重登计划：按失效先后排出「下一个该重登谁」，并把相邻两家的
+    // 建议重登时刻拉开 20 分钟——三家是先后扫码的，不拉开就会连着掉。
+    const plan = planStaggeredRelogin(
+      sessions.map((s) => ({
+        platformId: s.platform_id,
+        name: s.name,
+        // 锚点：登录时刻优先；缺失时用「会话恢复有效的时刻」兜底
+        anchorAt: s.sessionStartedAt || null,
+        maxAgeMs: CARRIER_RULES[ruleKeyFor(s.name, s.provider)]?.sessionMaxAgeMs ?? null,
+      })),
+      { now: Date.now() }
+    );
+    const planById = new Map(plan.map((x) => [x.platformId, x]));
+    for (const s of sessions) {
+      const item = planById.get(s.platform_id);
+      s.reloginOrder = item ? item.order : null;
+      s.suggestedReloginAt = item ? item.suggestedReloginAt : null;
+    }
+    return {
+      sessions,
+      now: Date.now(),
+      // 手机推送通道是否已配置。
+      // 为什么要在接口里说（实测 2026-11-21）：预警逻辑一直是对的，
+      // 但 config.json 里两个通道都是空的，提醒只落在服务日志里，
+      // 手机上一条也没收到——用户只能盯着界面。界面必须明确告知这件事。
+      pushConfigured: hasPhoneNotify(),
+    };
   });
 
   // ===== 平台面板 =====

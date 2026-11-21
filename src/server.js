@@ -7,6 +7,11 @@ import { readFileSync } from 'node:fs';
 import { initSchema } from './db/index.js';
 import { registerRoutes } from './routes.js';
 import { startMonitor, startCarrierKeepAlive } from './services/monitor.js';
+import { installFileLogger } from './services/logger.js';
+
+// 日志落盘：必须在任何业务输出之前安装（实测 2026-11-21：
+// 此前日志只在控制台，进程一退出就丢，事后查不到「登录态什么时候掉的」）
+installFileLogger();
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 

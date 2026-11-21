@@ -146,14 +146,30 @@ async function waitLoggedIn(page, keyword, { timeoutMs = 10 * 60 * 1000, isCarri
   await initSchema(); // 确保数据库已加载（sql.js 惰性初始化）
 
   const args = process.argv.slice(2);
-  const onlyKey = args.find((a) => !a.startsWith('--')) || null;
+  // 支持多个 key（按参数顺序逐个登录）——错峰重登要用：
+  // 服务端把三家的登录态文件 key 按「建议重登顺序」传进来，
+  // 脚本就按这个顺序一个一个弹窗口，用户扫完一个关掉、自动弹下一个。
+  const onlyKeys = args.filter((a) => !a.startsWith('--'));
+  const onlyKey = onlyKeys.length === 1 ? onlyKeys[0] : null;
 
   // 需要登录的目标：数据库里的浏览器抓取型平台优先；空库时用预设兜底
   const dbTargets = targetsFromDb();
   const allTargets = dbTargets.length ? dbTargets : PRESET_PLATFORMS;
-  const targets = onlyKey
-    ? allTargets.filter((p) => p.key === onlyKey || p.name === onlyKey || String(p.id) === onlyKey)
-    : allTargets;
+  const matchKey = (p, key) => p.key === key || p.name === key || String(p.id) === key;
+  let targets;
+  if (onlyKeys.length) {
+    // 按参数顺序排列（而不是按数据库顺序），保证重登顺序就是用户该扫的顺序
+    targets = onlyKeys
+      .map((k) => allTargets.find((p) => matchKey(p, k)))
+      .filter(Boolean);
+    const missing = onlyKeys.filter((k) => !allTargets.some((p) => matchKey(p, k)));
+    if (missing.length) {
+      console.log(`未找到平台: ${missing.join(', ')}。可用: ${allTargets.map((p) => p.key).join(', ')}`);
+      process.exit(1);
+    }
+  } else {
+    targets = allTargets;
+  }
   if (onlyKey && targets.length === 0) {
     console.log(`未找到平台: ${onlyKey}。可用: ${allTargets.map((p) => p.key).join(', ')}`);
     process.exit(1);
@@ -166,7 +182,7 @@ async function waitLoggedIn(page, keyword, { timeoutMs = 10 * 60 * 1000, isCarri
   }
 
   fs.mkdirSync(STORAGE_DIR, { recursive: true });
-  console.log(`=== AI 钱包一次性登录${onlyKey ? `（仅 ${onlyKey}）` : ''} ===`);
+  console.log(`=== AI 钱包一次性登录${onlyKeys.length ? `（仅 ${onlyKeys.join('、')}）` : ''} ===`);
   console.log(`本次登录 ${targets.length} 个平台${dbTargets.length ? '（读取数据库配置，新添加的平台也会包含）' : '（数据库无抓取平台，使用预设）'}。\n`);
 
   // 与抓取端使用同一组启动参数（禁用设备绑定会话），保证登录态可跨实例持久保存

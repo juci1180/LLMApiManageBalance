@@ -1,10 +1,10 @@
 // 监控调度器：周期刷新余额 → 阈值判断 → 生成单据 → 通知 → 到账跟踪
 import db from '../db/index.js';
-import { refreshPlatformBalance } from './balance.js';
+import { refreshPlatformBalance, recordBalanceIfChanged } from './balance.js';
 import { maybeCreateRechargeOrder, notifyOrder, tryCreditOrder } from './recharge.js';
 import { sendPhoneNotify } from './push.js';
 import { CARRIER_KEEPALIVE_MS, CARRIER_RULES, CARRIER_ENTRY_URLS, SAFE_KEYWORD_BY_KEY, renewCarrierSession, storageFileFor, storageKeyFor, enrichRuleWithBuiltin, parseScrapeRule } from './scraper_wallets.mjs';
-import { readSessionMeta } from './session_meta.mjs';
+import { readSessionMeta, markSessionKeepalive } from './session_meta.mjs';
 import { readFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -43,11 +43,22 @@ async function maybeNotifyFailures(platforms, errors) {
         if (Date.now() - lastPush >= 6 * 3600 * 1000) {
           setSetting(pushKey, Date.now());
           const err = errors.find((e) => e.platformId === p.id);
-          await sendPhoneNotify(
+          const res = await sendPhoneNotify(
             `⚠️ ${p.name} 余额抓取失败`,
             `已连续 ${count} 次巡检失败，可能登录态过期或平台风控。\n错误：${err?.error || ''}\n请尽快重新登录：node scripts/wallet-login.mjs`
           );
-          console.log(`[monitor] 已推送登录态过期提醒: ${p.name}`);
+          // 如实上报送达结果（实测 2026-11-21 16:37）：
+          // 此前这里无条件打印「已推送登录态过期提醒」，而 config.json 里两个通道
+          // 都是空的，sendPhoneNotify 什么都没发——日志说发了，用户一条也没收到。
+          if (res.delivered) {
+            console.log(`[monitor] 已推送登录态过期提醒: ${p.name}`);
+          } else {
+            console.warn(
+              `[monitor] ${p.name} 已连续 ${count} 次巡检失败，但**没有推送出去**：` +
+              'config.json 的 notify.serverchan / notify.bark 都没配置，手机收不到提醒。' +
+              '请改用界面上的「登录」按钮，或配置推送通道。'
+            );
+          }
         }
       }
     } else {
@@ -200,6 +211,21 @@ export function startCarrierKeepAlive() {
         if (r.ok) {
           console.log(`[keepalive] ${p.name} 访问成功（会话仍有效；注意：访问不会延长该网厅的会话寿命）`);
           setSetting(`session_alive_${p.id}`, 1);
+          // 保活链路独占写这三个字段（抓取路径不碰）。
+          // 为什么要显式写：renewCarrierSession 内部调的是 markSessionAlive，
+          // 那个函数只管会话元信息，不写保活状态——否则「保活跑没跑」就分不清了。
+          markSessionKeepalive(storageFile, 'alive', null);
+          // 保活顺带取到的余额：金额变了才写历史，没变只更新「最后查询」时刻。
+          // 这样余额的新鲜度不再取决于巡检是否恰好撞在会话存活窗口内
+          // （实测 2026-11-21：会话活约 60 分钟，巡检周期也是 1 小时，
+          //  巡检很容易整个落在会话失效之后，界面于是长期显示「抓取失败」）。
+          if (r.balance != null) {
+            const rec = recordBalanceIfChanged(p.id, r.balance, p.currency || 'CNY');
+            console.log(
+              `[keepalive] ${p.name} 顺带取到余额 ${rec.balance}` +
+              (rec.changed ? '（金额有变化，已写入历史）' : '（金额未变，不重复写历史）')
+            );
+          }
           // 「可续命」与「不可续命」的差别（实测 2026-11-20 晚 + 11-21 复核）：
           //   两家都是「登录后固定时长」（约 60 分钟），访问只是让 cookie 看起来新鲜，
           //   不会延长服务端会话。所以必须在窗口耗尽前就提醒用户重新扫码登录，
@@ -217,18 +243,28 @@ export function startCarrierKeepAlive() {
             }
           }
         } else if (r.loggedIn === false) {
-          console.warn(`[keepalive] ${p.name} 会话已失效（${r.reason || '跳转 ' + r.url}），需重新运行 node scripts/wallet-login.mjs ${storageKeyFor(p.name, p.provider, p.id)}`);
+          const reason = r.reason || '跳转 ' + r.url;
+          console.warn(`[keepalive] ${p.name} 会话已失效（${reason}），需重新运行 node scripts/wallet-login.mjs ${storageKeyFor(p.name, p.provider, p.id)}`);
           // 保活直接访问了网厅，它对会话是否有效的判断比 cookie 过期时间更可信
           setSetting(`session_alive_${p.id}`, 0);
-          // 主动推送：保活比巡检更早发现会话失效（巡检要等 1 小时），
-          // 同一平台 6 小时内只推一次，避免反复打扰
+          // 保活链路独占写保活状态：这里明确记「保活判定失效」，
+          // 与「巡检刷新先发现失效」区分开（两者对排查的意义不同）。
+          markSessionKeepalive(storageFile, 'dead', reason);
+          // 主动推送：保活比巡检更早发现会话失效（巡检要等 1 小时）。
+          // 节流键改用「登录周期」而不是固定时长（实测 2026-11-21 16:37）：
+          //   原来按 6 小时节流，但会话实际每 ~60 分钟就死一次、用户重新登录后再死，
+          //   6 小时内的后续失效全被吞掉——用户只会看到界面上突然变「未登录」，
+          //   手机却一直没响。改用「平台 id + 登录时刻」做键：
+          //   同一次登录只提醒一次，重新登录后自动可以再提醒。
+          const metaDead = readSessionMeta(storageFile);
+          const anchorToken = metaDead?.loggedInAt || metaDead?.aliveSince || 0;
           const pushKey = `keepalive_push_${p.id}`;
-          const lastPush = Number(db.prepare('SELECT value FROM settings WHERE key = ?').get(pushKey)?.value || 0);
-          if (Date.now() - lastPush >= 6 * 3600 * 1000) {
-            db.prepare('INSERT OR REPLACE INTO settings (key, value) VALUES (?, ?)').run(pushKey, String(Date.now()));
+          const token = `${p.id}:${anchorToken}`;
+          if (getSetting(pushKey) !== token) {
+            db.prepare('INSERT OR REPLACE INTO settings (key, value) VALUES (?, ?)').run(pushKey, token);
             const res = await sendPhoneNotify(
               `⚠️ ${p.name} 登录态已失效`,
-              `保活检测到网厅会话已失效（${r.reason || '跳转 ' + r.url}）。\n请重新登录：node scripts/wallet-login.mjs ${storageKeyFor(p.name, p.provider, p.id)}`
+              `保活检测到网厅会话已失效（${reason}）。\n请重新登录：node scripts/wallet-login.mjs ${storageKeyFor(p.name, p.provider, p.id)}`
             );
             // 如实上报：没配推送通道时 res.delivered=false，不能再谎报「已推送」
             // （实测 2026-11-20 晚：config.json 里两个通道都是空的，
@@ -245,9 +281,15 @@ export function startCarrierKeepAlive() {
           }
         } else {
           console.warn(`[keepalive] ${p.name} 会话续期失败`);
+          markSessionKeepalive(storageFile, 'error', r.reason || '访问失败');
         }
       } catch (err) {
+        // 保活抛异常（如浏览器起不来、网络不通）也要落状态：
+        // 此前只打一行日志，界面上与「保活根本没跑」长得一模一样，无法区分。
+        // 注意：异常**不等于**会话失效，所以不写 session_alive=0——
+        // 那是猜测，界面不该拿猜测冒充地面真相。
         console.warn(`[keepalive] ${p.name} 保活异常: ${err.message}`);
+        markSessionKeepalive(storageFile, 'error', err.message);
       }
     }
   };
