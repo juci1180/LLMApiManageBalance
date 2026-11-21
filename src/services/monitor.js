@@ -140,8 +140,8 @@ export function startMonitor() {
 let keepAliveTimer = null;
 
 // 会话即将失效时的提前提醒。
-// 为什么必须有这个（实测 2026-11-20 晚）：
-//   移动的会话是「登录后 ~60 分钟」的硬上限，保活救不回来，
+// 为什么必须有这个（实测 2026-11-20 晚 + 11-21 复核）：
+//   两家的会话都是「登录后固定时长」的限制（约 60 分钟），保活救不回来，
 //   一旦过了这个点就只能重新扫码登录。如果等到「已经变成未登录」才提醒，
 //   用户是事后才知道的（这正是本次问题的由来）。
 //   所以在窗口耗尽前 20 分钟就提醒，让用户有时间扫码。
@@ -149,7 +149,9 @@ let keepAliveTimer = null;
 async function notifySessionExpiring(platform, meta, leftMs, storageKey) {
   const pushKey = `session_expiring_push_${platform.id}`;
   // 用登录时刻做键：同一次登录只提醒一次，重新登录后自动可以再提醒
-  const token = `${platform.id}:${meta.loggedInAt}`;
+  // （loggedInAt 可能为空——用户常在别处自行扫码登录，此时用 aliveSince 兜底）
+  const anchor = meta.loggedInAt || meta.aliveSince || 0;
+  const token = `${platform.id}:${anchor}`;
   if (getSetting(pushKey) === token) return;
   const minutes = Math.max(1, Math.round(leftMs / 60000));
   const body =
@@ -197,18 +199,20 @@ export function startCarrierKeepAlive() {
           debugLabel: p.name,
         });
         if (r.ok) {
-          console.log(`[keepalive] ${p.name} 会话续期成功`);
+          console.log(`[keepalive] ${p.name} 访问成功（会话仍有效；注意：访问不会延长该网厅的会话寿命）`);
           setSetting(`session_alive_${p.id}`, 1);
-          // 「可续命」与「不可续命」的差别很大（实测 2026-11-20 晚）：
-          //   电信：每次访问服务端换发票据 → 会话能一直续下去，访问是真正有效的保活。
-          //   移动：访问只把 cookie 过期时间推后（值不变），会话仍是「登录后 ~60 分钟」硬上限，
-          //         访问救不回来。所以必须在窗口耗尽前就提醒用户重新扫码登录，
-          //         否则用户只能等到界面上出现「未登录」才知道。
+          // 「可续命」与「不可续命」的差别（实测 2026-11-20 晚 + 11-21 复核）：
+          //   两家都是「登录后固定时长」（约 60 分钟），访问只是让 cookie 看起来新鲜，
+          //   不会延长服务端会话。所以必须在窗口耗尽前就提醒用户重新扫码登录，
+          //   否则用户只能等到界面上出现「未登录」才知道。
           const meta = readSessionMeta(storageFile);
           const rule = CARRIER_RULES[p.provider] || {};
           const maxAge = rule.sessionMaxAgeMs;
-          if (maxAge && meta?.loggedInAt && rule.sessionRenewable !== true) {
-            const leftMs = meta.loggedInAt + maxAge - Date.now();
+          // 锚点：登录时刻优先；用户可能在别处自行扫码（我们的脚本没记录），
+          // 此时用「会话从失效恢复为有效的那一刻」兜底（偏保守，安全方向）。
+          const anchor = meta?.loggedInAt || meta?.aliveSince || null;
+          if (maxAge && anchor && rule.sessionRenewable !== true) {
+            const leftMs = anchor + maxAge - Date.now();
             if (leftMs > 0 && leftMs <= 20 * 60 * 1000) {
               await notifySessionExpiring(p, meta, leftMs, storageKeyFor(p.name, p.provider, p.id));
             }

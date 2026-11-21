@@ -104,6 +104,7 @@ export function buildSessionStatus({
   observedAlive = null,
   sessionStartedAt = null,
   lastRenewedAt = null,
+  revivedAt = null,
   maxAgeMs = null,
   renewable = null,
   warnMs = 15 * 60 * 1000,
@@ -118,6 +119,9 @@ export function buildSessionStatus({
     renewSource: null,
     sessionStartedAt: sessionStartedAt || null,
     lastRenewedAt: lastRenewedAt || null,
+    // 倒计时的起算点来源：'login' = 登录脚本记录的登录时刻；
+    // 'revived' = 「从失效恢复为有效」的时刻（用户可能在别处自助登录，脚本没记录到）
+    anchorSource: null,
     renewable: renewable === true,
   };
   if (!spec) return { ...base, state: 'uncalibrated' };
@@ -129,6 +133,7 @@ export function buildSessionStatus({
   const cookieExpiresAt = key.expires * 1000;
   let expiresAt = cookieExpiresAt;
   let ttlMs = cookieExpiresAt - now;
+  let anchorSource = null;
 
   // 「预计存活」不能只看 cookie 过期时间——实测（2026-11-20）这是假值：
   //   电信的 yiUIIlbdQT3fT 票据写着 7 天，但会话窗口只有约 60 分钟；
@@ -139,11 +144,19 @@ export function buildSessionStatus({
   //   ② 会话窗口（见上方两种起算口径）
   // maxAgeMs 尚未标定（如联通未联调）时，退回只用 cookie 口径。
   if (maxAgeMs) {
-    // 起算点：能续命的从上次成功访问算；不能续命的从登录时刻算。
+    // 起算点：
+    //   不可续命的（移动）：会话寿命从「登录时刻」起算，访问不重置它。
+    //   可续命的（电信）：从「上次成功访问」起算。
+    // loggedInAt 缺失是常态——用户常常在别处（自己的浏览器）扫码登录，
+    // 我们的登录脚本没参与，拿不到登录时刻。此时用 revivedAt（会话从失效恢复为
+    // 有效的那一刻）兜底：它必然晚于真实登录时刻，用它算会**偏保守**（少报存活时间），
+    // 对「提前预警重新登录」这个用途是安全的方向。
+    const startAnchor = sessionStartedAt || revivedAt || null;
     const anchor = renewable === false
-      ? (sessionStartedAt || lastRenewedAt)
-      : (lastRenewedAt || sessionStartedAt);
+      ? (startAnchor || lastRenewedAt)
+      : (lastRenewedAt || startAnchor);
     if (anchor) {
+      anchorSource = sessionStartedAt ? 'login' : (revivedAt ? 'revived' : 'renew');
       const sessionExpiresAt = anchor + maxAgeMs;
       if (sessionExpiresAt < expiresAt) {
         expiresAt = sessionExpiresAt;
@@ -183,6 +196,7 @@ export function buildSessionStatus({
       renewSource,
       sessionStartedAt: sessionStartedAt || null,
       lastRenewedAt: lastRenewedAt || null,
+      anchorSource,
       renewable: renewable === true,
     };
   }
@@ -205,6 +219,7 @@ export function buildSessionStatus({
     renewSource,
     sessionStartedAt: sessionStartedAt || null,
     lastRenewedAt: lastRenewedAt || null,
+    anchorSource,
     renewable: renewable === true,
   };
 }

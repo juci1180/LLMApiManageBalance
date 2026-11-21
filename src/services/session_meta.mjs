@@ -34,6 +34,11 @@ export function readSessionMeta(storageFile) {
     return {
       loggedInAt: Number(j.loggedInAt) || null,
       lastAliveAt: Number(j.lastAliveAt) || null,
+      // 最近一次「确认已失效」的时刻
+      deadAt: Number(j.deadAt) || null,
+      // 最近一次「从失效恢复为有效」的时刻——会话被重新登录后由第一次有效访问确定。
+      // 用途：用户没走我们的登录脚本扫码时（loggedInAt 缺失），用它作为倒计时锚点的兜底。
+      aliveSince: Number(j.aliveSince) || null,
       account: j.account || null,
     };
   } catch {
@@ -43,10 +48,14 @@ export function readSessionMeta(storageFile) {
 
 // 合并写入会话元信息（只覆盖传入的字段）
 export function writeSessionMeta(storageFile, patch = {}) {
-  const cur = readSessionMeta(storageFile) || { loggedInAt: null, lastAliveAt: null, account: null };
+  const cur = readSessionMeta(storageFile) || {
+    loggedInAt: null, lastAliveAt: null, deadAt: null, aliveSince: null, account: null,
+  };
   const next = {
     loggedInAt: patch.loggedInAt !== undefined ? patch.loggedInAt : cur.loggedInAt,
     lastAliveAt: patch.lastAliveAt !== undefined ? patch.lastAliveAt : cur.lastAliveAt,
+    deadAt: patch.deadAt !== undefined ? patch.deadAt : cur.deadAt,
+    aliveSince: patch.aliveSince !== undefined ? patch.aliveSince : cur.aliveSince,
     account: patch.account !== undefined ? patch.account : cur.account,
   };
   try {
@@ -63,15 +72,26 @@ export function writeSessionMeta(storageFile, patch = {}) {
 // 记录一次「成功登录」：重置计时起点（窗口从登录时刻起算）
 export function markSessionLoggedIn(storageFile, account = null) {
   const now = Date.now();
-  return writeSessionMeta(storageFile, { loggedInAt: now, lastAliveAt: now, account });
+  return writeSessionMeta(storageFile, {
+    loggedInAt: now, lastAliveAt: now, deadAt: null, aliveSince: now, account,
+  });
 }
 
-// 记录一次「访问网厅且会话仍然有效」：更新上次有效访问时刻
+// 记录一次「访问网厅且会话仍然有效」：更新上次有效访问时刻。
+// 若之前记录过「已失效」，说明用户重新登录过了 → 这一刻就是新会话的起点
+// （loggedInAt 缺失时，aliveSince 就是倒计时的兜底锚点）。
 export function markSessionAlive(storageFile, account = null) {
-  return writeSessionMeta(storageFile, { lastAliveAt: Date.now(), account });
+  const cur = readSessionMeta(storageFile);
+  const revived = Boolean(cur && cur.deadAt && !cur.lastAliveAt);
+  return writeSessionMeta(storageFile, {
+    lastAliveAt: Date.now(),
+    deadAt: revived ? null : (cur ? cur.deadAt : null),
+    aliveSince: revived ? Date.now() : (cur ? cur.aliveSince : Date.now()),
+    account: account !== undefined ? account : (cur ? cur.account : null),
+  });
 }
 
 // 记录「会话已失效」：清掉计时起点，让倒计时不再给出乐观估计
 export function markSessionDead(storageFile) {
-  return writeSessionMeta(storageFile, { lastAliveAt: null });
+  return writeSessionMeta(storageFile, { lastAliveAt: null, deadAt: Date.now() });
 }

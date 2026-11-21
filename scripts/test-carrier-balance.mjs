@@ -3,7 +3,7 @@
 // 覆盖：规则解析、内置规则套用、余额提取（多文案变体 / 负数 / 千分位 / 误命中防护）
 import { parseScrapeRule, enrichRuleWithBuiltin, extractBalance, CARRIER_RULES, CARRIER_ENTRY_URLS, SAFE_KEYWORD_BY_KEY, STORAGE_KEY_BY_NAME, detectCarrierLoggedIn, classifySessionState, BROWSER_ARGS, CARRIER_KEEPALIVE_MS, storageKeyFor, ruleKeyFor } from '../src/services/scraper_wallets.mjs';
 import { pickKeySessionCookie, buildSessionStatus, missingRequiredCookies, findDegradedCookies } from '../src/services/session_status.mjs';
-import { readSessionMeta, writeSessionMeta, markSessionLoggedIn, markSessionDead, parseMaskedAccount } from '../src/services/session_meta.mjs';
+import { readSessionMeta, writeSessionMeta, markSessionLoggedIn, markSessionAlive, markSessionDead, parseMaskedAccount } from '../src/services/session_meta.mjs';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
@@ -343,28 +343,36 @@ check('旧状态本来就残缺 → 不算退化（首次登录场景）',
 check('旧状态没有该文件 → 不算退化',
   findDegradedCookies(CT_PARTIAL_COOKIES, null, CT_REQUIRED).length === 0);
 
-// ===== 6. 会话寿命与「续命」机制（实测 2026-11-20 晚）=====
-// 实测结论（两家的机制不同，是本次掉线的根因）：
-//   移动：会话是「登录后固定 ~60 分钟」的服务端硬上限。访问只把 chargeresource 的
-//         *过期时间*推后（值不变），服务端不换发会话 → 保活续不回来。
-//   电信：每次访问服务端会换发票据（值变）→ 访问能续命，窗口约 60 分钟。
-//   所以「预计存活」必须按会话寿命算，而不是按 cookie 票据寿命算
+// ===== 6. 会话寿命与「续命」机制（实测 2026-11-20 晚 + 11-21 复核）=====
+// 实测结论（两家机制相同，是本次掉线的根因）：
+//   两家的会话都是「登录后固定 ~60 分钟」的服务端硬上限。
+//   移动：每次访问后 chargeresource 的*过期时间*被推后（值不变），服务端不换发会话。
+//   电信：每次访问服务端**确实换发了票据**（值变），但会话照样在固定时长后失效
+//         （11-21 复核：03:01 保活换发票据、03:26 巡检已判失效）。
+//   所以「访问能续命」对两家都不成立——保活的价值只是「尽早发现失效」。
+//   「预计存活」必须按会话寿命算，而不是按 cookie 票据寿命算
 //   （电信票据写着 7 天，实际 1 小时就死——那是假值）。
 check('移动规则标定了会话寿命', typeof CARRIER_RULES.carrier_cmcc.sessionMaxAgeMs === 'number');
 check('电信规则标定了会话寿命', typeof CARRIER_RULES.carrier_ct.sessionMaxAgeMs === 'number');
 check('移动标记为「访问续不了命」', CARRIER_RULES.carrier_cmcc.sessionRenewable === false);
-check('电信标记为「访问能续命」', CARRIER_RULES.carrier_ct.sessionRenewable === true);
-check('移动会话寿命约 50~60 分钟',
-  CARRIER_RULES.carrier_cmcc.sessionMaxAgeMs >= 40 * 60 * 1000 &&
+// 11-21 复核推翻了原先「电信能靠访问续命」的结论（当时只看到票据换发，没等到死亡时刻）
+check('电信同样标记为「访问续不了命」', CARRIER_RULES.carrier_ct.sessionRenewable === false);
+check('移动会话寿命约 50~70 分钟',
+  CARRIER_RULES.carrier_cmcc.sessionMaxAgeMs >= 50 * 60 * 1000 &&
   CARRIER_RULES.carrier_cmcc.sessionMaxAgeMs <= 70 * 60 * 1000);
-check('电信会话寿命约 60 分钟',
+check('电信会话寿命约 50~90 分钟',
   CARRIER_RULES.carrier_ct.sessionMaxAgeMs >= 50 * 60 * 1000 &&
   CARRIER_RULES.carrier_ct.sessionMaxAgeMs <= 90 * 60 * 1000);
-// 电信保活间隔必须小于会话窗口，否则必然掉线（原先设成 12 小时 = 100% 掉线）
+// 保活间隔必须小于会话窗口，否则「尽早发现失效」都做不到（原先电信设成 12 小时 = 100% 掉线）
 check('电信保活间隔 < 会话窗口',
   CARRIER_KEEPALIVE_MS.carrier_ct < CARRIER_RULES.carrier_ct.sessionMaxAgeMs);
 check('移动保活间隔仍远小于 1 小时（用于尽早发现失效）',
   CARRIER_KEEPALIVE_MS.carrier_cmcc <= 15 * 60 * 1000);
+// 电信保活改走完整抓取路径（keepaliveFullScrape）——独立于 sessionRenewable，
+// 否则 sessionRenewable 变 false 后保活会退化成只访问入口页
+check('电信保活走完整抓取路径', CARRIER_RULES.carrier_ct.keepaliveFullScrape === true);
+check('移动保活不强制走完整抓取路径（首页足够）',
+  CARRIER_RULES.carrier_cmcc.keepaliveFullScrape !== true);
 
 // 「预计存活」取会话寿命与票据寿命里更短的那个
 const CMCC_MAX = CARRIER_RULES.carrier_cmcc.sessionMaxAgeMs;
@@ -383,15 +391,19 @@ const CT_MAX = CARRIER_RULES.carrier_ct.sessionMaxAgeMs;
     st.ttlMs <= (CMCC_MAX - 40 * 60 * 1000) + 1000);
 }
 {
-  // 电信：上次成功访问 10 分钟前 → 窗口从上次访问起算，还剩 ~50 分钟
+  // 电信：访问**不**延长会话寿命（11-21 复核）——窗口从「登录时刻」起算，
+  // 即使刚访问过也不刷新。登录 30 分钟前 → 还剩 ~30 分钟（窗口 60 分钟）
   const st = buildSessionStatus({
     cookies: CT_COOKIES, spec: ctRule.sessionCookie, now: NOW,
-    sessionStartedAt: NOW - 3 * 3600 * 1000,
+    sessionStartedAt: NOW - 30 * 60 * 1000,
     lastRenewedAt: NOW - 10 * 60 * 1000,
-    maxAgeMs: CT_MAX, renewable: true,
+    maxAgeMs: CT_MAX, renewable: false,
   });
-  check('电信：窗口从上次成功访问起算',
-    st.ttlMs <= (CT_MAX - 10 * 60 * 1000) + 1000 && st.ttlMs > 0,
+  check('电信：窗口从登录时刻起算（访问不刷新）',
+    st.ttlMs <= (CT_MAX - 30 * 60 * 1000) + 1000 && st.ttlMs > 0,
+    `ttl=${Math.round((st.ttlMs || 0) / 60000)} 分钟`);
+  check('电信：刚访问过也不延长寿命（否则应更长）',
+    st.ttlMs <= (CT_MAX - 10 * 60 * 1000) + 1000,
     `ttl=${Math.round((st.ttlMs || 0) / 60000)} 分钟`);
 }
 {
@@ -437,7 +449,48 @@ check('可续命的运营商 renewable=true',
   const m3 = readSessionMeta(f);
   check('会话失效后清掉 lastAliveAt', m3.lastAliveAt === null);
   check('会话失效后保留登录时刻（供追溯）', m3.loggedInAt === m1.loggedInAt);
+  check('会话失效后记录了失效时刻', typeof m3.deadAt === 'number' && m3.deadAt > 0);
   try { fs.unlinkSync(f); } catch {}
+}
+
+// ===== 7b. 用户自行扫码登录时（我们的脚本没参与）的锚点兜底 =====
+// 场景（实测 2026-11-21）：用户在自己的浏览器里扫码登录，登录态文件被刷新了，
+// 但我们的登录脚本没跑过 → meta 里 loggedInAt 为空。
+// 此时倒计时必须能用「会话从失效恢复为有效的那一刻」当锚点，否则
+// 「预计存活」永远算不出来、预警也不会触发。
+{
+  const f = path.join(os.tmpdir(), `sessmeta-revive-${process.pid}.json`);
+  try { fs.unlinkSync(f); } catch {}
+  // 先标记失效（模拟上一轮已经死了）
+  markSessionDead(f);
+  check('失效状态：没有登录时刻', readSessionMeta(f).loggedInAt === null);
+  // 用户重新扫码后，第一次有效访问
+  markSessionAlive(f);
+  const m = readSessionMeta(f);
+  check('恢复有效后记录了 aliveSince', typeof m.aliveSince === 'number' && m.aliveSince > 0);
+  check('恢复有效后清掉 deadAt', m.deadAt === null);
+  check('恢复有效后仍没有登录时刻（脚本没参与）', m.loggedInAt === null);
+  // 用 aliveSince 当锚点，倒计时应该算得出来（且偏保守）
+  const st = buildSessionStatus({
+    cookies: CMCC_COOKIES, spec: cmccRule.sessionCookie, now: NOW,
+    sessionStartedAt: m.loggedInAt, revivedAt: m.aliveSince,
+    lastRenewedAt: m.lastAliveAt,
+    maxAgeMs: CARRIER_RULES.carrier_cmcc.sessionMaxAgeMs, renewable: false,
+  });
+  check('无登录时刻时用 aliveSince 兜底算出剩余时间', st.ttlMs !== null && st.ttlMs > 0,
+    `ttl=${Math.round((st.ttlMs || 0) / 60000)} 分钟`);
+  check('锚点来源标记为 revived', st.anchorSource === 'revived', `anchorSource=${st.anchorSource}`);
+  try { fs.unlinkSync(f); } catch {}
+}
+{
+  // 登录时刻存在时，优先用它（比 aliveSince 准）
+  const st = buildSessionStatus({
+    cookies: CMCC_COOKIES, spec: cmccRule.sessionCookie, now: NOW,
+    sessionStartedAt: NOW - 30 * 60 * 1000,
+    revivedAt: NOW - 5 * 60 * 1000,
+    maxAgeMs: CARRIER_RULES.carrier_cmcc.sessionMaxAgeMs, renewable: false,
+  });
+  check('有登录时刻时优先用它当锚点', st.anchorSource === 'login', `anchorSource=${st.anchorSource}`);
 }
 check('能从页面正文解析脱敏号码', parseMaskedAccount('欢迎回来 178****6402 当前套餐') === '178****6402');
 check('正文里没有号码时返回 null', parseMaskedAccount('普通页面文本') === null);

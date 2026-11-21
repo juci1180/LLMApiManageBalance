@@ -501,17 +501,18 @@
         const ttl = s.expiresAt ? s.expiresAt - now : null;
         const renew = s.nextRenewAt ? s.nextRenewAt - now : null;
         const tip = s.keyCookie ? `关键会话 cookie：${s.keyCookie}` : '';
-        // 「续命」对不同运营商含义不同：
-        //   电信：访问确实能换发票据、延长会话 → 续命是真能续上。
-        //   移动：访问只把 cookie 过期时间推后，服务端会话有「登录后固定时长」硬上限 → 续不了。
-        // 所以文案要说准，否则用户会以为续命倒计时到了就一定还活着。
+        // 「下次访问」对不同运营商含义不同：
+        //   两家都是「登录后固定时长」限制，访问不会延长会话寿命——
+        //   所以这一行只是「下一次去访问网厅的时刻」（用来尽早发现失效），
+        //   不是「下一次续命后还能活多久」。文案必须说准，否则用户会误以为
+        //   只要到点访问就一定能续上（实测 11-21：保活访问成功，25 分钟后照样失效）。
         const renewTip = s.renewable === false
-          ? '该网厅的会话是「登录后固定时长」限制，访问续不回来；到期需重新登录'
-          : (s.renewSource === 'keepalive' ? '保活访问网厅续期' : '余额巡检访问网厅续期');
+          ? '该网厅的会话是「登录后固定时长」限制，访问续不回来；到期需重新登录。此处是「下次检查失效」的时刻'
+          : (s.renewSource === 'keepalive' ? '保活访问网厅（用于尽早发现失效）' : '余额巡检访问网厅');
         const acct = s.account ? `　绑定号码 ${s.account}` : '';
         box.innerHTML =
           `<div class="sess-line" title="${esc(tip)}">预计存活 <b>${fmtCountdown(ttl)}</b>${esc(acct)}</div>` +
-          `<div class="sess-line" title="${esc(renewTip)}">续命 <b>${fmtCountdown(renew)}</b></div>`;
+          `<div class="sess-line" title="${esc(renewTip)}">下次检查 <b>${fmtCountdown(renew)}</b></div>`;
       });
     }
 

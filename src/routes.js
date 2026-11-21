@@ -135,6 +135,9 @@ export async function registerRoutes(fastify) {
         observedAlive: num(`session_alive_${p.id}`) === 0 ? false : (num(`session_alive_${p.id}`) > 0 ? true : null),
         sessionStartedAt: meta?.loggedInAt || null,
         lastRenewedAt: meta?.lastAliveAt || null,
+        // 「会话从失效恢复为有效」的时刻——用户可能在别处自行扫码登录，
+        // 我们的登录脚本没参与、拿不到登录时刻时，用它兜底作为倒计时锚点。
+        revivedAt: meta?.aliveSince || null,
         maxAgeMs: rule.sessionMaxAgeMs ?? null,
         renewable: rule.sessionRenewable ?? null,
         timing: {
@@ -157,6 +160,9 @@ export async function registerRoutes(fastify) {
         provider: p.provider,
         // 绑定号码：登录时网厅认定的号码（副卡被登成主卡号时能看出来）
         account: meta?.account || null,
+        // 倒计时锚点来源：'login' = 登录脚本记录的登录时刻；
+        // 'revived' = 会话恢复有效的时刻（用户自行扫码登录，脚本没记录）
+        anchorSource: status.anchorSource || null,
         ...status,
       });
     }
