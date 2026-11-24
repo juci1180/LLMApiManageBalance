@@ -127,6 +127,7 @@
                 <option value="moonshot">moonshot（月之暗面/Kimi）</option>
                 <option value="minimax">minimax（MiniMax）</option>
                 <option value="generic">generic（通用）</option>
+                <option value="yinchao">yinchao（音潮开放平台）</option>
                 <option value="carrier_cmcc">carrier_cmcc（中国移动个人卡）</option>
                 <option value="carrier_ct">carrier_ct（中国电信个人卡）</option>
                 <option value="carrier_cu">carrier_cu（中国联通个人卡）</option>
@@ -296,6 +297,9 @@
       { provider:'scrape', name:'火山引擎', balanceType:'scrape', currency:'CNY', threshold:200,
         url:'https://console.volcengine.com/finance/account-overview', jsonPath:'{"keyword":"可用余额","max":10000000}',
         hint:'浏览器方式：无需 API Key，打开火山引擎费用概览读「账户余额」。首次需运行 <code>node scripts/wallet-login.mjs</code> 登录一次。' },
+      { provider:'yinchao', name:'音潮开放平台', balanceType:'scrape', currency:'CNY', threshold:200,
+        url:'https://platform.yinchaoyongxian.com/console/overview', jsonPath:'{"keyword":"当前余额","max":10000000}',
+        hint:'浏览器方式：无需 API Key，打开音潮控制台「账户总览」读「当前余额」。首次需运行 <code>node scripts/wallet-login.mjs yinchao</code> 登录一次（手机号+短信验证码）。' },
       // ===== 三大运营商个人卡（手机 SIM 卡）=====
       // 运营商没有面向个人开放的查余额 API，这里走网上营业厅页面抓取：
       // 首次需运行 node scripts/wallet-login.mjs 登录一次网厅，之后定时巡检自动读余额
@@ -342,6 +346,7 @@
       tencent:   { hide:['balance-url','json-path'], keyLabel:'SecretId<a href="https://console.cloud.tencent.com/cam/capi" target="_blank" rel="noopener noreferrer" style="font-size:12px;color:var(--brand);margin-left:4px;">查看帮助</a>', secretLabel:'SecretKey<a href="https://console.cloud.tencent.com/cam/capi" target="_blank" rel="noopener noreferrer" style="font-size:12px;color:var(--brand);margin-left:4px;">查看帮助</a>' },
       openai:    { hide:['key-secret','balance-url','json-path'], keyLabel:'Admin Key（sk-admin 开头）<a href="https://platform.openai.com/api-keys" target="_blank" rel="noopener noreferrer" style="font-size:12px;color:var(--brand);margin-left:4px;">查看帮助</a>' },
       scrape:    { hide:['key','key-secret'], keyLabel:'无需 API Key（浏览器登录抓取）', secretLabel:'无需 Secret Key' },
+      yinchao:   { hide:['key','key-secret'], keyLabel:'无需 API Key（浏览器登录抓取）', secretLabel:'无需 Secret Key' },
       carrier_cmcc: { hide:['key','key-secret','balance-url','json-path'], keyLabel:'无需 API Key（网厅登录抓取）', secretLabel:'无需 Secret Key' },
       carrier_ct:  { hide:['key','key-secret','balance-url','json-path'], keyLabel:'无需 API Key（网厅登录抓取）', secretLabel:'无需 Secret Key' },
       carrier_cu:  { hide:['key','key-secret','balance-url','json-path'], keyLabel:'无需 API Key（网厅登录抓取）', secretLabel:'无需 Secret Key' },
