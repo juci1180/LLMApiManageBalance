@@ -6,6 +6,7 @@ import { sendPhoneNotify } from './push.js';
 import { CARRIER_RULES, CARRIER_ENTRY_URLS, SAFE_KEYWORD_BY_KEY, renewCarrierSession, storageFileFor, storageKeyFor, enrichRuleWithBuiltin, parseScrapeRule } from './scraper_wallets.mjs';
 import { readSessionMeta, markSessionKeepalive } from './session_meta.mjs';
 import { keepAliveIntervalMs, keepAliveEnabledFor } from './keepalive_policy.mjs';
+import { autoSkipLoggedOut, sessionConfirmedLoggedOut } from './scrape_policy.mjs';
 import { readFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -68,20 +69,61 @@ async function maybeNotifyFailures(platforms, errors) {
   }
 }
 
+// 自动巡检：该不该跳过这个平台
+//
+// 为什么需要（实测 2026-11-24）：用户反馈定时弹浏览器窗口。排查确认弹窗来自巡检：
+//   移动两家未登录 → 无头抓必然失败 → 回退有头窗口重试 → 弹窗；
+//   电信 189.cn 站点级拦无头 → 本身就用有头窗口抓 → 弹窗。
+// 会话已确认失效时，再去访问网厅既拿不到余额、也只会重复弹窗。
+// 所以自动巡检直接跳过已确认掉线的平台，等用户重新登录后自动恢复。
+//
+// 判据（session_meta 的 sidecar）：
+//   deadAt 有值 = 服务端已作废过这个会话；
+//   lastAliveAt 为空 = 之后没有再成功访问过。
+//   重新登录会写新的 loggedInAt 并清掉 deadAt，因此不会误跳过。
+function shouldSkipInAuto(platform) {
+  if (!autoSkipLoggedOut()) return null;
+  if (!String(platform.provider || '').startsWith('carrier_')) return null;
+  const storageFile = storageFileFor(platform.name, platform.provider, platform.id);
+  if (!storageFile) return null; // 没登录态文件：交给抓取路径报错，提示用户登录
+  const meta = readSessionMeta(storageFile);
+  if (!sessionConfirmedLoggedOut(meta)) return null;
+  return meta.deadReason || '会话已失效';
+}
+
 // 单次巡检（平台按批并行刷新，最多 3 个同时抓，整体提速）
-export async function runMonitorCycle() {
+// trigger：'auto'（定时巡检）/ 'manual'（用户点「立即巡检」）。
+// 手动来源保留原有能力（允许开有头窗口），用户在场时弹窗是可以接受的。
+export async function runMonitorCycle({ trigger = 'auto' } = {}) {
   if (cycleRunning) return { skipped: true, message: '已有巡检正在运行，请稍候' };
   cycleRunning = true;
   try {
     const platforms = db.prepare('SELECT * FROM platforms WHERE active = 1').all();
-    const results = { refreshed: [], orders: [], credited: [], errors: [] };
+    const results = { refreshed: [], orders: [], credited: [], errors: [], skipped: [] };
 
     const BATCH = 3;
     for (let i = 0; i < platforms.length; i += BATCH) {
       const slice = platforms.slice(i, i + BATCH);
       await Promise.all(slice.map(async (p) => {
+        // 0. 自动巡检跳过已确认掉线的平台：不访问网厅、不弹窗、不刷失败次数
+        //    （手动点「立即巡检」/「刷新余额」不走这里，用户想试随时能试）
+        const skipReason = trigger === 'auto' ? shouldSkipInAuto(p) : null;
+        if (skipReason) {
+          // 跳过的原因只记一次，避免每小时刷屏
+          const flag = `auto_skip_logged_${p.id}`;
+          if (!getSetting(flag)) {
+            setSetting(flag, Date.now());
+            console.log(
+              `[monitor] ${p.name} 会话已失效（${skipReason}），自动巡检已跳过、不再访问网厅；` +
+              '重新登录后自动恢复抓取'
+            );
+          }
+          results.skipped.push({ platformId: p.id, reason: skipReason });
+          return;
+        }
         // 1. 刷新余额
-        const r = await refreshPlatformBalance(p.id);
+        //    trigger='auto'：自动来源不开有头窗口（实测 2026-11-24，弹窗的根治点）
+        const r = await refreshPlatformBalance(p.id, { trigger });
         // 巡检本身就访问了网厅（无论是否抓到余额），因此这是本平台的一次「续命时机」。
         // 续命倒计时 = 下一次访问网厅 = 巡检与保活中较早的那个，所以失败也要记时刻。
         if (String(p.provider || '').startsWith('carrier_')) {
@@ -108,9 +150,11 @@ export async function runMonitorCycle() {
     }
 
     // 4. 到账跟踪：已打款的单子尝试确认到账
+    //    自动来源不开有头窗口——到账复查是后台行为，不该弹窗打扰用户
+    //    （实测 2026-11-24：定时弹窗的根源之一）
     const paidOrders = db.prepare("SELECT id FROM recharge_orders WHERE status = 'paid'").all();
     for (const o of paidOrders) {
-      const cr = await tryCreditOrder(o.id);
+      const cr = await tryCreditOrder(o.id, { trigger: trigger === 'auto' ? 'auto' : 'manual' });
       if (cr.ok) results.credited.push(o.id);
     }
 
@@ -126,7 +170,8 @@ export async function runMonitorCycle() {
 export function startMonitor() {
   const run = async () => {
     try {
-      const r = await runMonitorCycle();
+      // 定时巡检：自动来源，绝不开有头窗口（实测 2026-11-24）
+      const r = await runMonitorCycle({ trigger: 'auto' });
       const ts = new Date().toLocaleTimeString();
       console.log(`[monitor ${ts}] 刷新 ${r.refreshed.length} 平台, 生成 ${r.orders.length} 充值单, 到账 ${r.credited.length}, 错误 ${r.errors.length}`);
     } catch (err) {

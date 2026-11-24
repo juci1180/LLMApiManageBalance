@@ -112,7 +112,9 @@ export function markPaid(orderId) {
 }
 
 // 到账跟踪：打款后余额上涨，自动确认到账并扣减资金池
-export async function tryCreditOrder(orderId) {
+// trigger：'auto'（定时巡检触发的到账复查）/ 'manual'（用户点「检测到账」）。
+// 自动来源不开有头窗口——到账复查是后台行为，不该打扰用户（实测 2026-11-24）。
+export async function tryCreditOrder(orderId, { trigger = 'manual' } = {}) {
   const order = db.prepare(
     'SELECT o.*, p.id AS pid FROM recharge_orders o JOIN platforms p ON p.id = o.platform_id WHERE o.id = ?'
   ).get(orderId);
@@ -120,7 +122,7 @@ export async function tryCreditOrder(orderId) {
 
   // 重新拉取余额
   const { refreshPlatformBalance } = await import('./balance.js');
-  const r = await refreshPlatformBalance(order.pid);
+  const r = await refreshPlatformBalance(order.pid, { trigger });
   if (!r.ok || r.balance == null) return { ok: false, error: r.error };
 
   // 打款时的余额基准：优先用登记打款时记录的快照（balance_at_paid）；

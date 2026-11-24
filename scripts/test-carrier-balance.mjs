@@ -6,6 +6,8 @@ import { pickKeySessionCookie, buildSessionStatus, missingRequiredCookies, findD
 import { readSessionMeta, writeSessionMeta, markSessionLoggedIn, markSessionAlive, markSessionDead, markSessionKeepalive, parseMaskedAccount } from '../src/services/session_meta.mjs';
 import { redact } from '../src/services/logger.js';
 import { keepAliveMasterEnabled, keepAliveDisabledFor, keepAliveEnabledFor, keepAliveIntervalMs } from '../src/services/keepalive_policy.mjs';
+import { autoHeadedAllowed, autoSkipLoggedOut, sessionConfirmedLoggedOut } from '../src/services/scrape_policy.mjs';
+import { resolveScrapeMode } from '../src/services/scraper_wallets.mjs';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
@@ -677,6 +679,61 @@ check('总开关关闭时所有间隔归零',
 check('disabledProviders 判定独立于总开关',
   keepAliveDisabledFor('carrier_cmcc', cfgOff) === true
   && keepAliveDisabledFor('carrier_cu', cfgOff) === false);
+
+// ===== 17. 抓取策略（config.json 的 scrape 段）=====
+// 为什么需要（2026-11-24）：关掉保活后弹窗还在。排查确认弹窗来自**每小时余额巡检**，
+// 不是保活。根因是抓取函数不知道自己是被定时任务叫起来的、还是用户点按钮叫起来的：
+//   - 电信 189.cn 站点级拦无头 → 抓取时直接开有头窗口；
+//   - 移动无头抓失败 → 回退有头窗口重试。
+// 两条路都会弹窗。解法：给抓取链路加「自动/手动」来源标记，自动来源绝不开有头窗口。
+check('未配置 scrape 段时自动巡检不允许有头窗口（默认静默）',
+  autoHeadedAllowed({}) === false);
+check('未配置 scrape 段时自动巡检跳过已掉线平台（默认跳过）',
+  autoSkipLoggedOut({}) === true);
+check('scrape.headedInAuto=true 可显式放开有头窗口',
+  autoHeadedAllowed({ scrape: { headedInAuto: true } }) === true);
+check('scrape.skipLoggedOutInAuto=false 可关闭跳过',
+  autoSkipLoggedOut({ scrape: { skipLoggedOutInAuto: false } }) === false);
+
+// 抓取模式决策：这是「定时弹窗」的根治点
+const mAutoCt = resolveScrapeMode({ trigger: 'auto', rule: { headlessBlocked: true } });
+check('自动来源：站点级拦无头的网厅也用无头（不开有头窗口）',
+  mAutoCt.headless === true && mAutoCt.useHeaded === false);
+check('自动来源：不允许有头窗口回退',
+  mAutoCt.allowHeadedFallback === false);
+check('自动来源：不允许桌面 Chrome 回退（不去动用户自己的浏览器）',
+  mAutoCt.allowCdpFallback === false);
+
+const mManualCt = resolveScrapeMode({ trigger: 'manual', rule: { headlessBlocked: true } });
+check('手动来源：电信仍用有头窗口（否则抓不到余额）',
+  mManualCt.headless === false && mManualCt.useHeaded === true);
+check('手动来源：保留有头回退与桌面 Chrome 回退',
+  mManualCt.allowHeadedFallback === true && mManualCt.allowCdpFallback === true);
+
+const mAutoCmcc = resolveScrapeMode({ trigger: 'auto', rule: { headlessBlocked: false } });
+check('自动来源：移动（不拦无头）用无头',
+  mAutoCmcc.headless === true && mAutoCmcc.useHeaded === false);
+check('自动来源：移动也不回退有头窗口',
+  mAutoCmcc.allowHeadedFallback === false);
+
+// 显式放开时自动来源恢复旧行为（用户主动改配置才生效）
+const mAutoHeaded = resolveScrapeMode({
+  trigger: 'auto', rule: { headlessBlocked: true }, headedInAuto: true,
+});
+check('显式 headedInAuto=true 时自动来源也用有头窗口',
+  mAutoHeaded.headless === false && mAutoHeaded.allowHeadedFallback === true);
+
+// 已确认掉线的会话判定（自动巡检跳过的依据）
+check('deadAt 有值且 lastAliveAt 为空 → 判定已掉线',
+  sessionConfirmedLoggedOut({ deadAt: 100, lastAliveAt: null }) === true);
+check('deadAt 有值但之后又成功访问过 → 不算掉线',
+  sessionConfirmedLoggedOut({ deadAt: 100, lastAliveAt: 200 }) === false);
+check('没有 deadAt → 不算掉线',
+  sessionConfirmedLoggedOut({ deadAt: null, lastAliveAt: null }) === false);
+check('无元信息 → 不算掉线',
+  sessionConfirmedLoggedOut(null) === false);
+check('重新登录后（deadAt 被清空）不跳过',
+  sessionConfirmedLoggedOut({ deadAt: null, lastAliveAt: 300 }) === false);
 
 const fail = results.filter((r) => !r.pass);
 console.log(`\n结果：共 ${results.length} 项，通过 ${results.length - fail.length}，失败 ${fail.length}`);

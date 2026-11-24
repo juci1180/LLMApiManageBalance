@@ -9,6 +9,10 @@
     "enabled": true,
     "disabledProviders": ["carrier_cmcc", "carrier_ct"]
   },
+  "scrape": {
+    "headedInAuto": false,
+    "skipLoggedOutInAuto": true
+  },
   "notify": {
     "serverchan": "",
     "bark": ""

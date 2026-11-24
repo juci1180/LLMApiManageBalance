@@ -82,7 +82,9 @@ function getByPath(obj, path) {
 
 // 三大运营商个人卡抓取：与 scrape 模式同一套浏览器逻辑，
 // 差别在于运营商的余额页需要从网厅首页点菜单进入，且没有统一的货币符号。
-async function scrapeCarrier(platform, providerKey) {
+// trigger：'auto'（定时巡检）/ 'manual'（用户点按钮）。自动来源不开有头窗口——
+// 那是弹窗的根源（实测 2026-11-24）；手动来源保持原有能力。
+async function scrapeCarrier(platform, providerKey, trigger = 'manual') {
   const url = platform.balance_api_url || CARRIER_ENTRY_URLS[providerKey];
   if (!url) {
     throw new Error('运营商平台未配置网厅地址（balance_api_url）');
@@ -98,6 +100,7 @@ async function scrapeCarrier(platform, providerKey) {
     rule,
     debugLabel: platform.name,
     storageFile,
+    trigger,
     // 运营商网厅对无头浏览器反爬明显（实测电信 189.cn 无头下页面为空），
     // 无头失败时允许退回桌面 Chrome（真实浏览器指纹与登录态）
     allowCdpFallback: true,
@@ -360,17 +363,17 @@ const providers = {
   // 官方能力开放平台的余额接口需企业资质审核 + 用户授权，个人拿不到。
   // 因此走网上营业厅页面抓取：登录一次拿登录态，之后定时读网厅余额页。
   // 抓取逻辑完全复用 scrape 模式，仅 provider 键不同（便于前端与登录脚本识别）。
-  carrier_cmcc: async (platform) => {
-    return await scrapeCarrier(platform, 'carrier_cmcc');
+  carrier_cmcc: async (platform, trigger) => {
+    return await scrapeCarrier(platform, 'carrier_cmcc', trigger);
   },
-  carrier_ct: async (platform) => {
-    return await scrapeCarrier(platform, 'carrier_ct');
+  carrier_ct: async (platform, trigger) => {
+    return await scrapeCarrier(platform, 'carrier_ct', trigger);
   },
-  carrier_cu: async (platform) => {
-    return await scrapeCarrier(platform, 'carrier_cu');
+  carrier_cu: async (platform, trigger) => {
+    return await scrapeCarrier(platform, 'carrier_cu', trigger);
   },
 
-  scrape: async (platform) => {
+  scrape: async (platform, trigger) => {
     // 浏览器抓取：打开钱包页面（balance_api_url），按 balance_json_path 规则提取余额
     // 配置示例：balance_api_url=https://platform.minimax.cn/console/account-wallet
     //          balance_json_path={"keyword":"可用额度","max":10000000}
@@ -384,6 +387,7 @@ const providers = {
       rule,
       debugLabel: platform.name,
       storageFile: storageFileFor(platform.name, platform.provider, platform.id),
+      trigger,
     });
     return { balance, raw: {}, unit: platform.currency || '元', scraped: true };
   },
@@ -397,7 +401,7 @@ const providers = {
   },
 };
 
-export async function fetchBalance(platform) {
+export async function fetchBalance(platform, trigger = 'manual') {
   // balance_type=scrape/manual 时以查询方式为准（浏览器抓取/手动录入），
   // 其余情况优先按 provider 匹配专用查询器，再兑底到 generic
   const type = platform.balance_type || 'api';
@@ -408,7 +412,7 @@ export async function fetchBalance(platform) {
       : (provider && providers[provider]) ||
         providers[type] ||
         providers.generic;
-  const result = await fetcher(platform);
+  const result = await fetcher(platform, trigger);
   return result;
 }
 
@@ -504,7 +508,10 @@ export function recordBalanceIfChanged(platformId, balance, currency) {
   return { changed, balance: value };
 }
 
-export async function refreshPlatformBalance(platformId) {
+// trigger：'auto'（定时巡检等自动来源）/ 'manual'（用户点按钮）
+// 自动来源下绝不开有头窗口（实测 2026-11-24：定时弹窗的根源），
+// 手动来源保留原有能力（电信这类只认可见窗口的网厅靠它抓）。
+export async function refreshPlatformBalance(platformId, { trigger = 'manual' } = {}) {
   console.log(`[refresh] 开始刷新平台 id=${platformId}...`);
   const platform = db.prepare('SELECT * FROM platforms WHERE id = ?').get(platformId);
   if (!platform) throw new Error('平台不存在');
@@ -516,7 +523,7 @@ export async function refreshPlatformBalance(platformId) {
   const isManual = (platform.balance_type || 'api') === 'manual';
 
   try {
-    const { balance, raw } = await fetchBalance(platform);
+    const { balance, raw } = await fetchBalance(platform, trigger);
     console.log(`[refresh] 获取余额成功: balance=${balance}`);
     if (balance != null) {
       db.prepare(

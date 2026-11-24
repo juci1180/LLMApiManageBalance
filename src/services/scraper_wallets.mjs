@@ -12,6 +12,7 @@ import http from 'node:http';
 import { fileURLToPath } from 'node:url';
 import { findDegradedCookies } from './session_status.mjs';
 import { markSessionAlive, markSessionDead } from './session_meta.mjs';
+import { autoHeadedAllowed } from './scrape_policy.mjs';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
@@ -701,6 +702,40 @@ export async function persistStorageState(context, storageFile, { requiredCookie
   }
 }
 
+// 抓取模式决策（纯函数，便于单测）。
+//
+// 为什么需要区分「自动」与「手动」（实测 2026-11-24）：
+//   用户反馈「一直弹窗浏览器」。排查确认弹窗来自**每小时余额巡检**，不是保活。
+//   弹窗有两条来源路径：
+//     1) 站点级拦截无头的网厅（189.cn 电信）→ 抓取时直接开有头窗口；
+//     2) 无头抓取失败后回退到有头窗口重试（移动未登录时必然走到这一步）。
+//   抓取函数原先不知道自己是被定时任务叫起来的、还是用户点按钮叫起来的，
+//   于是没法区分「该不该弹窗」。
+//
+//   manual（用户在界面点按钮）：保持原行为——需要时有头抓，失败可回退。
+//   auto（定时巡检等自动来源）：默认绝不开有头窗口，无头失败直接报错，不回退。
+//     除非 config.json 的 scrape.headedInAuto 显式设为 true（用户主动要回旧行为）。
+export function resolveScrapeMode({ trigger = 'manual', rule = null, headless = true, headedInAuto = null } = {}) {
+  const autoMode = trigger === 'auto';
+  // 自动来源是否允许可见窗口：默认不允许。
+  // headedInAuto 为 null 时读配置（config.json 的 scrape.headedInAuto）。
+  const headedOk = headedInAuto === null ? autoHeadedAllowed() : headedInAuto === true;
+  // 站点级拦无头的网厅：有头抓才拿得到内容
+  const useHeaded = (!autoMode || headedOk) && rule?.headlessBlocked === true;
+  // 自动来源且不允许可见窗口时：桌面 Chrome 回退（有头窗口）与 CDP 回退（在用户浏览器开标签）都不用
+  const silentAuto = autoMode && !headedOk;
+  return {
+    autoMode,
+    useHeaded,
+    // 桌面 Chrome（CDP）回退：会在用户自己的浏览器里开标签页，自动来源默认不用
+    allowCdpFallback: !silentAuto,
+    // 有头窗口回退：自动来源默认不用（这正是弹窗的来源）
+    allowHeadedFallback: !silentAuto,
+    // 实际使用的窗口模式
+    headless: useHeaded ? false : headless,
+  };
+}
+
 // 用登录态文件（storageState）抓取单平台
 // headless 参数：某些网厅（如 189.cn）做站点级无头拦截，只能用有头窗口抓。
 async function scrapeWithStorage(storageFile, { url, rule, debugLabel, waitMs, headless = true }) {
@@ -745,24 +780,23 @@ async function scrapeViaDesktopChrome({ url, rule, debugLabel, waitMs }) {
 //   2. 连接桌面 Chrome 实时登录态（CDP，端口 9222）；
 //   3. 回退到独立浏览器档案 src/playwright-user-data。
 // headless=false 仅用于独立档案的登录场景。
-export async function scrapeWalletBalance({ url, rule, debugLabel = '平台', headless = true, waitMs = 8000, storageFile = null, allowCdpFallback = false }) {
+export async function scrapeWalletBalance({ url, rule, debugLabel = '平台', headless = true, waitMs = 8000, storageFile = null, allowCdpFallback = false, trigger = 'manual' }) {
+  // 模式决策见 resolveScrapeMode：自动来源不开有头窗口、失败不回退（弹窗的根治点）。
+  const mode = resolveScrapeMode({ trigger, rule, headless });
   // allowCdpFallback=true：登录态文件抓取失败后，退回桌面 Chrome（真实浏览器指纹）。
   // 运营商网厅对无头浏览器反爬明显（实测电信 189.cn 无头下页面为空），需要这条退路。
   if (storageFile) {
-    // 站点级拦截无头浏览器的网厅（如实测 189.cn）：直接用有头窗口抓，
-    // 否则先无头失败再回退，会白等一轮超时。
-    const needHeaded = rule?.headlessBlocked === true;
     try {
-      return await scrapeWithStorage(storageFile, { url, rule, debugLabel, waitMs, headless: needHeaded ? false : headless });
+      return await scrapeWithStorage(storageFile, { url, rule, debugLabel, waitMs, headless: mode.headless });
     } catch (err) {
-      if (!allowCdpFallback) throw err;
+      if (!allowCdpFallback || !mode.allowCdpFallback) throw err;
       const cdpUp = await isDesktopChromeRunning();
       if (cdpUp) {
         console.warn(`[scrape] ${debugLabel} 抓取失败（${err.message}），改用桌面 Chrome 重试`);
         return await scrapeViaDesktopChrome({ url, rule, debugLabel, waitMs });
       }
       // 桌面 Chrome 不可用时，再试一次有头窗口（部分站点只拦无头）
-      if (!needHeaded && headless) {
+      if (mode.allowHeadedFallback && !mode.useHeaded && headless) {
         console.warn(`[scrape] ${debugLabel} 无头抓取失败（${err.message}），改用有头浏览器重试`);
         return await scrapeWithStorage(storageFile, { url, rule, debugLabel, waitMs, headless: false });
       }
@@ -770,7 +804,8 @@ export async function scrapeWalletBalance({ url, rule, debugLabel = '平台', he
     }
   }
 
-  const cdpUp = await isDesktopChromeRunning();
+  // 桌面 Chrome 回退只在手动来源时用（自动来源不去动用户自己的浏览器）
+  const cdpUp = mode.allowCdpFallback ? await isDesktopChromeRunning() : false;
   if (cdpUp) {
     return await scrapeViaDesktopChrome({ url, rule, debugLabel, waitMs });
   }

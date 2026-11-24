@@ -99,9 +99,11 @@ export async function registerRoutes(fastify) {
       const finish = async () => {
         try { fs.closeSync(out); } catch {}
         // 登录脚本退出 = 用户扫完码了 → 立刻抓一次余额，把界面上的旧数换成新数
+        // trigger='manual'：用户在等这个结果（登录窗口本就是可见的），
+        // 按手动来源处理，允许开有头窗口把余额拿回来。
         try {
           for (const row of loginTargets) {
-            const r = await refreshPlatformBalance(row.id);
+            const r = await refreshPlatformBalance(row.id, { trigger: 'manual' });
             console.log(
               `[login] ${row.name} 登录后自动抓余额：` +
               (r.ok ? `成功 ${r.balance}` : `失败 ${r.error}`)
@@ -362,10 +364,12 @@ export async function registerRoutes(fastify) {
   });
 
   // 手动刷新单个平台余额
+  // trigger='manual'：用户在点按钮，允许开有头窗口
+  // （电信这类站点级拦无头的网厅，靠手动刷新才能拿到余额）
   fastify.post('/api/platforms/:id/refresh', async (req, reply) => {
     let r;
     try {
-      r = await refreshPlatformBalance(req.params.id);
+      r = await refreshPlatformBalance(req.params.id, { trigger: 'manual' });
     } catch (err) {
       return reply.code(404).send({ error: err.message });
     }
@@ -480,7 +484,8 @@ export async function registerRoutes(fastify) {
   });
 
   // ===== 手动触发巡检 =====
+  // trigger='manual'：用户在场，允许开有头窗口（与定时巡检的静默行为不同）
   fastify.post('/api/monitor/run', async () => {
-    return runMonitorCycle();
+    return runMonitorCycle({ trigger: 'manual' });
   });
 }
