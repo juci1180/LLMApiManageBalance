@@ -220,7 +220,7 @@ const providers = {
   // 鉴权双传：Header Authorization: Bearer <key> + body {"apikey": key}（实测空 body 报 1601，缺一不可）。
   // 实测 2026-11-24 两个关键事实：
   //   1. 返回信封 {code,msg,errorMessages,data}：成功 code=0，余额在 data.remainMoney
-  //      （字符串法币余额，币种 data.currency=CNY），算力点数在 data.remainPoint
+  //      （字符串法币余额，币种 data.currency=CNY），积分（另一种货币）在 data.remainPoint
   //      （官方资料写的 remainCoins 实测是另一个字段，值为 0）。
   //   2. 报错也返回 HTTP 200（1601=参数缺失、806=APIKEY_USER_NOT_FOUND），
   //      必须校验业务码 code!==0，不能只看 HTTP 状态。
