@@ -1,4 +1,4 @@
-// 一次性初始化：把 6 个平台（腾讯云TokenHub、小米MiMo、Kimi、阿里云百炼、MiniMax、火山引擎）
+// 一次性初始化：把 7 个平台（腾讯云TokenHub、小米MiMo、Kimi、阿里云百炼、MiniMax、火山引擎、音潮开放平台）
 // 配置为浏览器抓取（balance_type=scrape），钱包页面地址与提取规则写入数据库
 import initSqlJs from 'sql.js';
 import { readFileSync, writeFileSync } from 'node:fs';
@@ -15,6 +15,9 @@ const WALLETS = [
   { name: '阿里云百炼',      provider: 'dashscope', url: 'https://billing-cost.console.aliyun.com',                   rule: '{"keyword":"可用额度","max":10000000}' },
   { name: 'MiniMax',         provider: 'minimax',   url: 'https://platform.minimax.cn/console/recharge-records',    rule: '{"keyword":"可用额度","max":10000000}' },
   { name: '火山引擎',        provider: 'volcengine', url: 'https://console.volcengine.com/finance/account-overview',  rule: '{"keyword":"可用余额","max":10000000}' },
+  // 音潮开放平台：无官方余额 API（2026-11-24 核实文档站），抓控制台总览页；
+  // 登录态先跑 node scripts/wallet-login.mjs yinchao（提取由内置 PRECISE_REGEX_BY_KEY.yinchao 兕底）
+  { name: '音潮开放平台',    provider: 'yinchao',   url: 'https://platform.yinchaoyongxian.com/console/overview',    rule: '{"keyword":"当前余额","max":10000000}' },
 ];
 
 const SQL = await initSqlJs();

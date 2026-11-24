@@ -78,6 +78,12 @@ export const SAFE_KEYWORD_BY_KEY = {
   kimi: '可用余额',
   bailian: '可用额度',
   volc: '可用余额',
+  // 音潮开放平台（yinchaoyongxian.com，实测 2026-11-24）：登录与抓取统一打开 console/overview——
+  // 未登录会被重定向到 /login?redirect=...，登录后回到总览页，页面必然出现「当前余额」，
+  // 登录判定与余额等待用同一个词即可。
+  // 注意：这里必须用字符串而不是候选数组——非运营商平台的内置关键字会作为单个 keyword
+  // 进入 scrapeOnePage 的 targets=[rule.keyword]，数组会嵌套导致 waitForKeyword 永远等不到。
+  yinchao: '当前余额',
   // 三大运营商个人卡：登录后网厅右上角出现"退出登录"；部分省份版本不显示退出文字，
   // 登录后首页/余额页会出现余额标签，因此两者并用，任一命中即视为已登录
   // 注意：运营商的标签必须配合「后面跟真实数字」才算已登录，见 detectCarrierLoggedIn
@@ -125,6 +131,10 @@ export const PRECISE_REGEX_BY_KEY = {
   bailian: '可用额度[^\\d¥￥]{0,12}?[¥￥]\\s*(-?\\d[\\d,]*(?:\\.[0-9]+)?)',
   // 火山引擎：可用余额 \n¥0.00（"可用余额预警"栏目名后无金额符号，天然不中）
   volc: '可用余额[^\\d¥￥]{0,12}?[¥￥]\\s*(-?\\d[\\d,]*(?:\\.[0-9]+)?)',
+  // 音潮开放平台（实测 2026-11-24，console/overview 页 innerText）：
+  //   "账户总览\n当前余额\n¥\n2.20\nCNY\n去充值…" —— ¥ 与数字分段渲染也能命中；
+  // 页面其余「余额」字样（余额使用说明/充值明细）后不接金额，天然不中
+  yinchao: '当前余额[^\\d¥￥]{0,12}?[¥￥]\\s*(-?\\d[\\d,]*(?:\\.[0-9]+)?)',
 };
 
 // 三大运营商网厅入口（登录后靠 CARRIER_RULES.entries 点菜单进入余额页）
@@ -452,6 +462,9 @@ export const STORAGE_KEY_BY_NAME = {
   '阿里云': 'bailian',
   'MiniMax': 'minimax',
   '火山引擎': 'volc',
+  // 音潮开放平台（无余额 API，控制台页抓取）：见 2026-11-24 调研，文档站无账户/余额接口
+  '音潮开放平台': 'yinchao',
+  '音潮': 'yinchao',
   // 三大运营商个人卡（网厅抓取）
   '中国移动话费': 'carrier_cmcc',
   '中国电信话费': 'carrier_ct',
