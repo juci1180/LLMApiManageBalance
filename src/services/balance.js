@@ -216,6 +216,43 @@ const providers = {
     return { balance: quota / 500000, raw: { quota, used_quota: d.used_quota, request_count: d.request_count } };
   },
 
+  // RunningHub 国内站：POST /uc/openapi/accountStatus（官方账户余额接口）
+  // 鉴权双传：Header Authorization: Bearer <key> + body {"apikey": key}（实测空 body 报 1601，缺一不可）。
+  // 实测 2026-11-24 两个关键事实：
+  //   1. 返回信封 {code,msg,errorMessages,data}：成功 code=0，余额在 data.remainMoney
+  //      （字符串法币余额，币种 data.currency=CNY），算力点数在 data.remainPoint
+  //      （官方资料写的 remainCoins 实测是另一个字段，值为 0）。
+  //   2. 报错也返回 HTTP 200（1601=参数缺失、806=APIKEY_USER_NOT_FOUND），
+  //      必须校验业务码 code!==0，不能只看 HTTP 状态。
+  runninghub: async (platform) => {
+    const key = platform.api_key;
+    if (!key) throw new Error('RunningHub 需要配置 API Key（控制台个人中心/API 设置页获取）');
+    const url = platform.balance_api_url || 'https://www.runninghub.cn/uc/openapi/accountStatus';
+    const res = await fetch(url, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        Authorization: `Bearer ${key}`,
+      },
+      body: JSON.stringify({ apikey: key }),
+    });
+    const text = await res.text();
+    let data;
+    try { data = JSON.parse(text); } catch { data = {}; }
+    if (!res.ok) throw new Error(`RunningHub 余额查询失败: HTTP ${res.status} ${text.slice(0, 150)}`);
+    if (data?.code !== 0) {
+      throw new Error(`RunningHub 余额查询失败: ${data?.msg || `code=${data?.code}`}`);
+    }
+    const d = data?.data || {};
+    const balance = Number(d.remainMoney);
+    if (!Number.isFinite(balance)) throw new Error(`RunningHub 未返回可解析的 remainMoney: ${text.slice(0, 200)}`);
+    return {
+      balance,
+      raw: { remainMoney: d.remainMoney, currency: d.currency, remainPoint: d.remainPoint,
+        remainCoins: d.remainCoins, currentTaskCounts: d.currentTaskCounts, apiType: d.apiType },
+    };
+  },
+
   // 火山引擎：费用中心 QueryBalanceAcct，HMAC-SHA256 签名
   volcengine: async (platform) => {
     const ak = platform.api_key;

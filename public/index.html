@@ -128,6 +128,7 @@
                 <option value="minimax">minimax（MiniMax）</option>
                 <option value="generic">generic（通用）</option>
                 <option value="anyaigc">anyaigc（AnyAIGC）</option>
+                <option value="runninghub">runninghub（RunningHub 国内站）</option>
                 <option value="yinchao">yinchao（音潮开放平台）</option>
                 <option value="carrier_cmcc">carrier_cmcc（中国移动个人卡）</option>
                 <option value="carrier_ct">carrier_ct（中国电信个人卡）</option>
@@ -283,6 +284,9 @@
         hint:'需填两项：<b>API Key</b> 填 <b>System Access Token</b>（控制台 Profile → Profile Settings → Account &amp; Security → API Call Tokens → Generate Token，重新生成会使旧 Token 立即作废），<b>Secret Key</b> 填数字用户 ID（同页顶部 <code>ID:</code>，仅数字）。余额按 500000 quota = $1 换算（2026-11-24 已与控制台显示精确校准）。' },
       // ===== 浏览器抓取型（scrape）：无官方余额 API，打开钱包页读取余额 =====
       // 首次需运行 node scripts/wallet-login.mjs 登录一次，之后定时巡检自动抓取
+      { provider:'runninghub', name:'RunningHub国内站', currency:'CNY', threshold:200,
+        url:'https://www.runninghub.cn/uc/openapi/accountStatus',
+        hint:'只需填 <b>API Key</b>（RunningHub 控制台个人中心/API 设置页获取）。余额=钱包法币余额 remainMoney（CNY）；官方接口 POST accountStatus，Bearer 与 apikey 双传。' },
       { provider:'scrape', name:'腾讯云', balanceType:'scrape', currency:'CNY', threshold:200,
         url:'https://console.cloud.tencent.com/expense', jsonPath:'{"keyword":"可用余额","max":10000000}',
         hint:'浏览器方式：无需 API Key，打开腾讯云费用中心读「账户余额」。首次需运行 <code>node scripts/wallet-login.mjs</code> 登录一次。' },
@@ -352,6 +356,7 @@
       scrape:    { hide:['key','key-secret'], keyLabel:'无需 API Key（浏览器登录抓取）', secretLabel:'无需 Secret Key' },
       yinchao:   { hide:['key','key-secret'], keyLabel:'无需 API Key（浏览器登录抓取）', secretLabel:'无需 Secret Key' },
       anyaigc:   { hide:['balance-url','json-path'], keyLabel:'System Access Token<a href="https://docs.anyaigc.ai/reference/system/api/user/self" target="_blank" rel="noopener noreferrer" style="font-size:12px;color:var(--brand);margin-left:4px;">获取帮助</a>', secretLabel:'User ID（Profile Settings 页顶部 ID:，仅数字）' },
+      runninghub: { hide:['key-secret','balance-url','json-path'], keyLabel:'API Key<a href="https://www.runninghub.cn/runninghub-api-doc-cn/" target="_blank" rel="noopener noreferrer" style="font-size:12px;color:var(--brand);margin-left:4px;">获取帮助</a>', secretLabel:'无需 Secret Key' },
       carrier_cmcc: { hide:['key','key-secret','balance-url','json-path'], keyLabel:'无需 API Key（网厅登录抓取）', secretLabel:'无需 Secret Key' },
       carrier_ct:  { hide:['key','key-secret','balance-url','json-path'], keyLabel:'无需 API Key（网厅登录抓取）', secretLabel:'无需 Secret Key' },
       carrier_cu:  { hide:['key','key-secret','balance-url','json-path'], keyLabel:'无需 API Key（网厅登录抓取）', secretLabel:'无需 Secret Key' },
