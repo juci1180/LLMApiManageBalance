@@ -96,7 +96,7 @@ function shouldSkipInAuto(platform) {
   if (!storageFile) return null; // 没登录态文件：交给抓取路径报错，提示用户登录
   const meta = readSessionMeta(storageFile);
   if (!sessionConfirmedLoggedOut(meta)) return null;
-  return meta.deadReason || '会话已失效';
+  return `会话已失效（${meta.deadReason || '原因未知'}），重新登录后自动恢复抓取`;
 }
 
 // 单次巡检（平台按批并行刷新，最多 3 个同时抓，整体提速）
@@ -117,14 +117,13 @@ export async function runMonitorCycle({ trigger = 'auto' } = {}) {
         //    （手动点「立即巡检」/「刷新余额」不走这里，用户想试随时能试）
         const skipReason = trigger === 'auto' ? shouldSkipInAuto(p) : null;
         if (skipReason) {
-          // 跳过的原因只记一次，避免每小时刷屏
+          // 跳过的原因记一次，避免每小时刷屏；但原因变了必须重发
+          // （实测 2026-11-24：电信的跳过理由从「会话已失效」变成了「该网厅只接受可见窗口」，
+          //   旧提示不重发的话，日志里会一直留着过时的说法，误导后续排查）。
           const flag = `auto_skip_logged_${p.id}`;
-          if (!getSetting(flag)) {
-            setSetting(flag, Date.now());
-            console.log(
-              `[monitor] ${p.name} 会话已失效（${skipReason}），自动巡检已跳过、不再访问网厅；` +
-              '重新登录后自动恢复抓取'
-            );
+          if (getSetting(flag) !== skipReason) {
+            setSetting(flag, skipReason);
+            console.log(`[monitor] ${p.name} 自动巡检已跳过、不再访问网厅：${skipReason}`);
           }
           results.skipped.push({ platformId: p.id, reason: skipReason });
           return;

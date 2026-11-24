@@ -16,6 +16,7 @@ import { hasPhoneNotify } from './services/push.js';
 import { readSessionMeta } from './services/session_meta.mjs';
 import { computeQueryStatus } from './services/query_status.mjs';
 import { keepAliveIntervalMs, keepAliveEnabledFor } from './services/keepalive_policy.mjs';
+import { autoHeadedAllowed } from './services/scrape_policy.mjs';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const PROJECT_ROOT = join(__dirname, '..');
@@ -216,6 +217,9 @@ export async function registerRoutes(fastify) {
         // 保活是否已关闭（config.json 的 keepalive 段）。
         // 界面据此显示「自动续命已关闭」，而不是拿一个不会到来的倒计时糊弄用户。
         keepAliveEnabled: keepAliveEnabledFor(p.provider),
+        // 自动巡检是否抓这个平台。站点级拦无头的网厅（电信 189.cn）在自动巡检里不抓，
+        // 界面必须如实说明「需手动刷新」——否则用户只看到余额不更新，会以为程序坏了。
+        autoScrapeDisabled: rule.headlessBlocked === true && !autoHeadedAllowed(),
         // 保活最近一次运行的结果：'alive' / 'dead' / 'error'
         // 与「保活根本没跑」的区别：keepaliveAt 为空就说明保活从没成功跑过
         keepaliveState: meta?.keepaliveState || null,
