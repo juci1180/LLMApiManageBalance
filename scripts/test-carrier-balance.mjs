@@ -8,6 +8,7 @@ import { redact } from '../src/services/logger.js';
 import { keepAliveMasterEnabled, keepAliveDisabledFor, keepAliveEnabledFor, keepAliveIntervalMs } from '../src/services/keepalive_policy.mjs';
 import { autoHeadedAllowed, autoSkipLoggedOut, sessionConfirmedLoggedOut } from '../src/services/scrape_policy.mjs';
 import { resolveScrapeMode } from '../src/services/scraper_wallets.mjs';
+import { effectiveScrapeRule } from '../src/services/balance.js';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
@@ -734,6 +735,16 @@ check('无元信息 → 不算掉线',
   sessionConfirmedLoggedOut(null) === false);
 check('重新登录后（deadAt 被清空）不跳过',
   sessionConfirmedLoggedOut({ deadAt: null, lastAliveAt: 300 }) === false);
+
+// ===== 18. 调度层与抓取路径的规则口径必须一致 =====
+// 为什么需要（2026-11-24）：电信 189.cn 标记了 headlessBlocked（站点级拦无头）。
+// 自动巡检若用无头去抓，正文 0 字 → 被当成「页面已无登录标识」→ 误判成未登录，
+// 把用户刚扫码登上的会话又标成失效。所以自动巡检要认得这条规则。
+const ruleCt = effectiveScrapeRule({ name: '中国电信话费', provider: 'carrier_ct', balance_json_path: '' });
+check('调度层取到的电信规则标记了站点级拦无头', ruleCt?.headlessBlocked === true);
+const ruleCmcc = effectiveScrapeRule({ name: '中国移动话费', provider: 'carrier_cmcc', balance_json_path: '' });
+check('调度层取到的移动规则未标记拦无头', ruleCmcc?.headlessBlocked === false);
+check('规则取不到时返回 null（不抛错）', effectiveScrapeRule(null) === null);
 
 const fail = results.filter((r) => !r.pass);
 console.log(`\n结果：共 ${results.length} 项，通过 ${results.length - fail.length}，失败 ${fail.length}`);

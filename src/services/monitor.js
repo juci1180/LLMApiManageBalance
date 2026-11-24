@@ -1,12 +1,12 @@
 // 监控调度器：周期刷新余额 → 阈值判断 → 生成单据 → 通知 → 到账跟踪
 import db from '../db/index.js';
-import { refreshPlatformBalance, recordBalanceIfChanged } from './balance.js';
+import { refreshPlatformBalance, recordBalanceIfChanged, effectiveScrapeRule } from './balance.js';
 import { maybeCreateRechargeOrder, notifyOrder, tryCreditOrder } from './recharge.js';
 import { sendPhoneNotify } from './push.js';
 import { CARRIER_RULES, CARRIER_ENTRY_URLS, SAFE_KEYWORD_BY_KEY, renewCarrierSession, storageFileFor, storageKeyFor, enrichRuleWithBuiltin, parseScrapeRule } from './scraper_wallets.mjs';
 import { readSessionMeta, markSessionKeepalive } from './session_meta.mjs';
 import { keepAliveIntervalMs, keepAliveEnabledFor } from './keepalive_policy.mjs';
-import { autoSkipLoggedOut, sessionConfirmedLoggedOut } from './scrape_policy.mjs';
+import { autoSkipLoggedOut, autoHeadedAllowed, sessionConfirmedLoggedOut } from './scrape_policy.mjs';
 import { readFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -82,8 +82,16 @@ async function maybeNotifyFailures(platforms, errors) {
 //   lastAliveAt 为空 = 之后没有再成功访问过。
 //   重新登录会写新的 loggedInAt 并清掉 deadAt，因此不会误跳过。
 function shouldSkipInAuto(platform) {
-  if (!autoSkipLoggedOut()) return null;
   if (!String(platform.provider || '').startsWith('carrier_')) return null;
+  // 站点级拦无头的网厅（电信 189.cn）：自动巡检用无头抓必然拿不到内容（正文 0 字），
+  // 会被当成「页面已无登录标识」→ 误判成未登录，把用户刚扫码登上的会话又标成失效。
+  // 所以自动巡检不碰这类平台：只允许手动点「刷新余额」（手动来源走有头窗口）。
+  // 规则与抓取路径同源（effectiveScrapeRule），避免两处口径不一致。
+  const rule = effectiveScrapeRule(platform);
+  if (rule?.headlessBlocked === true && !autoHeadedAllowed()) {
+    return '该网厅只接受可见窗口（站点拦截无头浏览器），自动巡检不抓取，请手动点「刷新余额」';
+  }
+  if (!autoSkipLoggedOut()) return null;
   const storageFile = storageFileFor(platform.name, platform.provider, platform.id);
   if (!storageFile) return null; // 没登录态文件：交给抓取路径报错，提示用户登录
   const meta = readSessionMeta(storageFile);

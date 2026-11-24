@@ -80,6 +80,17 @@ function getByPath(obj, path) {
   }, obj);
 }
 
+// 平台 → 实际生效的抓取规则（含内置运营商规则）。
+// 调度层要用它判断「这个平台能不能无头抓」——不能的话自动巡检就不该去试。
+// 为什么必须与抓取路径用同一份规则（实测 2026-11-24）：
+//   电信 189.cn 标记了 headlessBlocked（站点级拦无头）。如果调度层不知道这一点，
+//   自动巡检就会用无头去抓 189.cn——拿不到内容（正文 0 字），
+//   于是「页面为空」被误判成「未登录」，把用户刚扫码登上的会话又标成失效。
+export function effectiveScrapeRule(platform) {
+  if (!platform) return null;
+  return enrichRuleWithBuiltin(parseScrapeRule(platform.balance_json_path), platform.name, platform.provider);
+}
+
 // 三大运营商个人卡抓取：与 scrape 模式同一套浏览器逻辑，
 // 差别在于运营商的余额页需要从网厅首页点菜单进入，且没有统一的货币符号。
 // trigger：'auto'（定时巡检）/ 'manual'（用户点按钮）。自动来源不开有头窗口——
