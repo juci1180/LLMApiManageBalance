@@ -54,7 +54,9 @@ export async function initSchema() {
       -- 最后一次余额查询：尝试时刻（成功与失败都记）、结果、上一次成功时刻
       last_query_at TEXT,
       last_query_status TEXT,
-      last_success_at TEXT
+      last_success_at TEXT,
+      -- 平台附加展示数据（JSON）：当前存 RunningHub 积分 remainPoint，仅展示用
+      extra_json TEXT
     );
 
     CREATE TABLE IF NOT EXISTS balance_history (
@@ -130,6 +132,15 @@ export async function initSchema() {
     const oNames = oCols.length ? oCols[0].values.map((r) => r[1]) : [];
     if (!oNames.includes('balance_at_paid')) {
       db.run('ALTER TABLE recharge_orders ADD COLUMN balance_at_paid REAL');
+    }
+  } catch {}
+
+  // 迁移：为旧库补齐 extra_json 列（平台附加展示数据，当前存 RunningHub 积分）
+  try {
+    const eCols = db.exec('PRAGMA table_info(platforms)');
+    const eNames = eCols.length ? eCols[0].values.map((r) => r[1]) : [];
+    if (!eNames.includes('extra_json')) {
+      db.run('ALTER TABLE platforms ADD COLUMN extra_json TEXT');
     }
   } catch {}
 

@@ -50,6 +50,9 @@
     .sess-box { margin-top:4px; font-size:11px; line-height:1.7; color:#64748b; }
     .sess-line { white-space:nowrap; }
     .sess-line b { color:#334155; font-weight:600; font-variant-numeric:tabular-nums; }
+    /* 平台附加货币次行（如 RunningHub 积分，另一种货币，仅展示、不参与预警） */
+    .pts-line { margin-top:4px; font-size:11px; line-height:1.7; color:#64748b; white-space:nowrap; }
+    .pts-line b { color:#334155; font-weight:600; font-variant-numeric:tabular-nums; }
     .sess-bad { color:var(--red); font-weight:600; }
     .sess-dim { color:#94a3b8; }
     .sess-warn { color:var(--orange,#ea580c); font-weight:600; }
@@ -648,6 +651,16 @@
       const has = Object.values(carrierSessions).length > 0;
       btn.style.display = has ? '' : 'none';
     }
+    // 平台附加货币次行：extra_json.remainPoint（RunningHub 积分，另一种货币），仅展示不参与预警
+    function pointsLine(p) {
+      if (!p || !p.extra_json) return '';
+      let extra = null;
+      try { extra = JSON.parse(p.extra_json); } catch { return ''; }
+      const pt = extra && extra.remainPoint;
+      if (pt == null || !Number.isFinite(Number(pt))) return '';
+      return `<div class="pts-line">积分 <b>${Number(pt)}</b></div>`;
+    }
+
     function renderPlatforms() {
       const list = platformsCache;
       // 有浏览器抓取型平台（含三大运营商网厅抓取）时显示"全部一键登录"按钮
@@ -680,7 +693,7 @@
         <tr${isLow ? ' class="low-balance"' : ''}>
           <td><span class="pname">${iconFor(p)}<b>${esc(p.name)}</b></span>${isCarrier(p.provider) ? `<div class="sess-box" data-pid="${p.id}"></div>` : ''}</td>
           <td>${providerLabel(p)}</td>
-          <td id="bal-cell-${p.id}">${balanceBadge(p.latest_balance, p.threshold)} ${esc(p.currency)}</td>
+          <td id="bal-cell-${p.id}">${balanceBadge(p.latest_balance, p.threshold)} ${esc(p.currency)}${pointsLine(p)}</td>
           <td>${p.threshold}</td>
           <td>${p.recharge_amount}</td>
           <td>${lastQueryCell(p)}</td>

@@ -615,6 +615,14 @@ export async function refreshPlatformBalance(platformId, { trigger = 'manual' } 
         'INSERT INTO balance_history (platform_id, balance, currency) VALUES (?, ?, ?)'
       ).run(platformId, balance, platform.currency);
       console.log(`[refresh] 余额已保存到历史记录`);
+      // 附加货币（如 RunningHub 积分 remainPoint）：随查询落库仅展示，不参与预警/充值
+      if (raw && raw.remainPoint != null) {
+        const pt = Number(raw.remainPoint);
+        if (Number.isFinite(pt)) {
+          db.prepare('UPDATE platforms SET extra_json = ? WHERE id = ?')
+            .run(JSON.stringify({ remainPoint: pt, updatedAt: new Date().toISOString() }), platformId);
+        }
+      }
       // 余额历史保留上限：每小时巡检持续写入，不清理则表无限膨胀
       // （只保留最近 500 条，与 /history 接口的 max limit 一致）
       db.prepare(`
