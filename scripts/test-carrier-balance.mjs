@@ -5,6 +5,7 @@ import { parseScrapeRule, enrichRuleWithBuiltin, extractBalance, CARRIER_RULES, 
 import { pickKeySessionCookie, buildSessionStatus, missingRequiredCookies, findDegradedCookies, classifySessionObservation, planStaggeredRelogin, describeDeadReason } from '../src/services/session_status.mjs';
 import { readSessionMeta, writeSessionMeta, markSessionLoggedIn, markSessionAlive, markSessionDead, markSessionKeepalive, parseMaskedAccount } from '../src/services/session_meta.mjs';
 import { redact } from '../src/services/logger.js';
+import { keepAliveMasterEnabled, keepAliveDisabledFor, keepAliveEnabledFor, keepAliveIntervalMs } from '../src/services/keepalive_policy.mjs';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
@@ -646,6 +647,36 @@ check('服务端失效标记 → 服务端下发会话失效标记',
   describeDeadReason('中国移动话费 会话已失效（服务端下发会话失效标记 ssoFail）') === '服务端下发会话失效标记');
 check('其他文案 → 归为会话已失效', describeDeadReason('网络异常') === '会话已失效');
 check('空文案 → 归为会话已失效', describeDeadReason('') === '会话已失效');
+
+// ===== 16. 保活开关（config.json 的 keepalive 段）=====
+// 为什么需要（2026-11-24）：保活会定期访问网厅，189.cn 站点级拦无头、
+// 只能用有头窗口抓 → 每 10~20 分钟弹一次浏览器窗口。用户要求关掉移动和电信的自动续命。
+// 开关做成配置，用户改一行 json + 重启即可，不用改代码。
+const cfgNone = {};
+check('未配置 keepalive 段时总开关默认开（向后兼容）', keepAliveMasterEnabled(cfgNone) === true);
+check('未配置时三家都照旧保活',
+  keepAliveEnabledFor('carrier_cmcc', cfgNone) && keepAliveEnabledFor('carrier_ct', cfgNone));
+check('未配置时保活间隔取自常量',
+  keepAliveIntervalMs('carrier_cmcc', cfgNone) === CARRIER_KEEPALIVE_MS.carrier_cmcc);
+
+const cfgOff = { keepalive: { enabled: true, disabledProviders: ['carrier_cmcc', 'carrier_ct'] } };
+check('disabledProviders 能关掉移动', keepAliveEnabledFor('carrier_cmcc', cfgOff) === false);
+check('disabledProviders 能关掉电信', keepAliveEnabledFor('carrier_ct', cfgOff) === false);
+check('关掉的运营商保活间隔归零（调度器据此跳过）',
+  keepAliveIntervalMs('carrier_cmcc', cfgOff) === 0 && keepAliveIntervalMs('carrier_ct', cfgOff) === 0);
+check('没被关掉的运营商（联通）不受影响', keepAliveEnabledFor('carrier_cu', cfgOff) === true);
+check('没被关掉的运营商间隔保持常量值',
+  keepAliveIntervalMs('carrier_cu', cfgOff) === CARRIER_KEEPALIVE_MS.carrier_cu);
+
+const cfgAllOff = { keepalive: { enabled: false } };
+check('总开关 false 能关掉全部运营商',
+  !keepAliveEnabledFor('carrier_cmcc', cfgAllOff) && !keepAliveEnabledFor('carrier_ct', cfgAllOff)
+  && !keepAliveEnabledFor('carrier_cu', cfgAllOff));
+check('总开关关闭时所有间隔归零',
+  keepAliveIntervalMs('carrier_cu', cfgAllOff) === 0);
+check('disabledProviders 判定独立于总开关',
+  keepAliveDisabledFor('carrier_cmcc', cfgOff) === true
+  && keepAliveDisabledFor('carrier_cu', cfgOff) === false);
 
 const fail = results.filter((r) => !r.pass);
 console.log(`\n结果：共 ${results.length} 项，通过 ${results.length - fail.length}，失败 ${fail.length}`);

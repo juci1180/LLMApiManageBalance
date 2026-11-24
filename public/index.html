@@ -487,6 +487,15 @@
     //   没有 keepaliveAt = 保活从未成功跑过（服务没在跑 / 刚重启）
     // 这四种以前在界面上长得一模一样，事后无法分辨。
     function keepaliveNote(s) {
+      // 保活被关闭（config.json 的 keepalive 段）——如实说，不要拿一个
+      // 不会到来的倒计时糊弄用户。
+      if (s.keepAliveEnabled === false) {
+        return {
+          text: '自动续命已关闭',
+          tip: '该运营商的自动续命（保活）已在 config.json 里关闭，不再定期访问网厅、不会弹窗。'
+            + '余额巡检仍会照常跑。',
+        };
+      }
       if (!s.keepaliveAt) {
         return { text: '保活尚未运行', tip: '保活从未成功跑过：服务可能刚重启，或保活没启动' };
       }

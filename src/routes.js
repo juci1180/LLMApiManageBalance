@@ -10,11 +10,12 @@ import { spawn } from 'node:child_process';
 import fs from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { dirname, join } from 'node:path';
-import { storageKeyFor, storageFileFor, CARRIER_RULES, CARRIER_KEEPALIVE_MS, ruleKeyFor } from './services/scraper_wallets.mjs';
+import { storageKeyFor, storageFileFor, CARRIER_RULES, ruleKeyFor } from './services/scraper_wallets.mjs';
 import { buildSessionStatus, planStaggeredRelogin } from './services/session_status.mjs';
 import { hasPhoneNotify } from './services/push.js';
 import { readSessionMeta } from './services/session_meta.mjs';
 import { computeQueryStatus } from './services/query_status.mjs';
+import { keepAliveIntervalMs, keepAliveEnabledFor } from './services/keepalive_policy.mjs';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const PROJECT_ROOT = join(__dirname, '..');
@@ -182,7 +183,7 @@ export async function registerRoutes(fastify) {
         maxAgeMs: rule.sessionMaxAgeMs ?? null,
         renewable: rule.sessionRenewable ?? null,
         timing: {
-          keepAliveIntervalMs: CARRIER_KEEPALIVE_MS[p.provider] || 0,
+          keepAliveIntervalMs: keepAliveIntervalMs(p.provider),
           monitorIntervalMs: monitorIntervalMs(),
           lastKeepAliveAt: num(`keepalive_at_${p.id}`),
           lastMonitorAt: num(`monitor_at_${p.id}`),
@@ -210,6 +211,9 @@ export async function registerRoutes(fastify) {
         lastDeadAt: meta?.lastDeadAt || null,
         // 失效原因（跳登录页 / 服务端失效标记 / 页面已无登录标识）
         deadReason: meta?.deadReason || null,
+        // 保活是否已关闭（config.json 的 keepalive 段）。
+        // 界面据此显示「自动续命已关闭」，而不是拿一个不会到来的倒计时糊弄用户。
+        keepAliveEnabled: keepAliveEnabledFor(p.provider),
         // 保活最近一次运行的结果：'alive' / 'dead' / 'error'
         // 与「保活根本没跑」的区别：keepaliveAt 为空就说明保活从没成功跑过
         keepaliveState: meta?.keepaliveState || null,

@@ -3,8 +3,9 @@ import db from '../db/index.js';
 import { refreshPlatformBalance, recordBalanceIfChanged } from './balance.js';
 import { maybeCreateRechargeOrder, notifyOrder, tryCreditOrder } from './recharge.js';
 import { sendPhoneNotify } from './push.js';
-import { CARRIER_KEEPALIVE_MS, CARRIER_RULES, CARRIER_ENTRY_URLS, SAFE_KEYWORD_BY_KEY, renewCarrierSession, storageFileFor, storageKeyFor, enrichRuleWithBuiltin, parseScrapeRule } from './scraper_wallets.mjs';
+import { CARRIER_RULES, CARRIER_ENTRY_URLS, SAFE_KEYWORD_BY_KEY, renewCarrierSession, storageFileFor, storageKeyFor, enrichRuleWithBuiltin, parseScrapeRule } from './scraper_wallets.mjs';
 import { readSessionMeta, markSessionKeepalive } from './session_meta.mjs';
+import { keepAliveIntervalMs, keepAliveEnabledFor } from './keepalive_policy.mjs';
 import { readFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -147,6 +148,11 @@ export function startMonitor() {
 // 措施：给运营商单独加一条更快的保活节奏（CARRIER_KEEPALIVE_MS），且抓取成功后
 // 把服务端续期后的 cookie 写回登录态文件（persistStorageState）。
 // 保活只做「访问 + 续期」，不写余额历史、不触发充值单——避免高频巡检污染数据。
+//
+// 开关（2026-11-24）：保活会弹浏览器窗口（189.cn 站点级拦无头，只能有头抓），
+// 用户嫌烦要求关掉移动和电信的自动续命。现在保活间隔由 config.json 的
+// keepalive 段决定（见 keepalive_policy.mjs），关掉后这一层不再访问网厅。
+// 注意：关掉保活**不影响**余额巡检（每小时一次，仍会访问网厅、仍会弹窗）。
 let keepAliveTimer = null;
 
 // 会话即将失效时的提前提醒。
@@ -188,8 +194,19 @@ export function startCarrierKeepAlive() {
       "SELECT * FROM platforms WHERE active = 1 AND provider LIKE 'carrier_%'"
     ).all();
     for (const p of rows) {
-      const interval = CARRIER_KEEPALIVE_MS[p.provider];
-      if (!interval) continue;
+      // 保活间隔取自配置开关（config.json 的 keepalive 段）。
+      // 关掉后 interval=0 → 直接跳过这家，不再访问网厅、不再弹窗。
+      const interval = keepAliveIntervalMs(p.provider);
+      if (!interval) {
+        if (keepAliveEnabledFor(p.provider)) continue; // 该运营商本来就没配保活间隔
+        // 已关闭：只在第一次遇到时说明一次，避免每分钟刷屏。
+        const flag = `keepalive_disabled_logged_${p.id}`;
+        if (!getSetting(flag)) {
+          setSetting(flag, Date.now());
+          console.log(`[keepalive] ${p.name} 的自动续命已关闭（config.json 的 keepalive 配置），不再访问网厅`);
+        }
+        continue;
+      }
       // 登录态文件按「账号」唯一：同运营商的多个号码各用各的文件（传入 p.id）
       const storageFile = storageFileFor(p.name, p.provider, p.id);
       if (!storageFile) continue; // 未登录，等巡检报错提示用户登录

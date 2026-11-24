@@ -5,6 +5,10 @@
     "intervalMs": 3600000,
     "defaultThreshold": 200
   },
+  "keepalive": {
+    "enabled": true,
+    "disabledProviders": ["carrier_cmcc", "carrier_ct"]
+  },
   "notify": {
     "serverchan": "",
     "bark": ""
