@@ -127,6 +127,7 @@
                 <option value="moonshot">moonshot（月之暗面/Kimi）</option>
                 <option value="minimax">minimax（MiniMax）</option>
                 <option value="generic">generic（通用）</option>
+                <option value="anyaigc">anyaigc（AnyAIGC）</option>
                 <option value="yinchao">yinchao（音潮开放平台）</option>
                 <option value="carrier_cmcc">carrier_cmcc（中国移动个人卡）</option>
                 <option value="carrier_ct">carrier_ct（中国电信个人卡）</option>
@@ -277,6 +278,9 @@
       { provider:'moonshot', name:'月之暗面', currency:'CNY', threshold:200,
         url:'https://api.moonshot.cn/v1/users/me/balance', jsonPath:'data.available_balance',
         hint:'只需填 <b>API Key</b>（在 <a href="https://platform.moonshot.cn/console/api-keys" target="_blank" rel="noopener noreferrer" style="color:var(--brand);">月之暗面平台「API Key 管理」页</a>创建）。余额为人民币。' },
+      { provider:'anyaigc', name:'AnyAIGC', currency:'USD', threshold:200,
+        url:'https://anyaigc.ai/api/user/self',
+        hint:'需填两项：<b>API Key</b> 填 <b>System Access Token</b>（控制台 Profile → Profile Settings → Account &amp; Security → API Call Tokens → Generate Token，重新生成会使旧 Token 立即作废），<b>Secret Key</b> 填数字用户 ID（同页顶部 <code>ID:</code>，仅数字）。余额按 500000 quota = $1 换算（2026-11-24 已与控制台显示精确校准）。' },
       // ===== 浏览器抓取型（scrape）：无官方余额 API，打开钱包页读取余额 =====
       // 首次需运行 node scripts/wallet-login.mjs 登录一次，之后定时巡检自动抓取
       { provider:'scrape', name:'腾讯云', balanceType:'scrape', currency:'CNY', threshold:200,
@@ -347,6 +351,7 @@
       openai:    { hide:['key-secret','balance-url','json-path'], keyLabel:'Admin Key（sk-admin 开头）<a href="https://platform.openai.com/api-keys" target="_blank" rel="noopener noreferrer" style="font-size:12px;color:var(--brand);margin-left:4px;">查看帮助</a>' },
       scrape:    { hide:['key','key-secret'], keyLabel:'无需 API Key（浏览器登录抓取）', secretLabel:'无需 Secret Key' },
       yinchao:   { hide:['key','key-secret'], keyLabel:'无需 API Key（浏览器登录抓取）', secretLabel:'无需 Secret Key' },
+      anyaigc:   { hide:['balance-url','json-path'], keyLabel:'System Access Token<a href="https://docs.anyaigc.ai/reference/system/api/user/self" target="_blank" rel="noopener noreferrer" style="font-size:12px;color:var(--brand);margin-left:4px;">获取帮助</a>', secretLabel:'User ID（Profile Settings 页顶部 ID:，仅数字）' },
       carrier_cmcc: { hide:['key','key-secret','balance-url','json-path'], keyLabel:'无需 API Key（网厅登录抓取）', secretLabel:'无需 Secret Key' },
       carrier_ct:  { hide:['key','key-secret','balance-url','json-path'], keyLabel:'无需 API Key（网厅登录抓取）', secretLabel:'无需 Secret Key' },
       carrier_cu:  { hide:['key','key-secret','balance-url','json-path'], keyLabel:'无需 API Key（网厅登录抓取）', secretLabel:'无需 Secret Key' },

@@ -179,6 +179,43 @@ const providers = {
     return { balance, raw: data };
   },
 
+  // AnyAIGC（New API 架构中转站）：GET /api/user/self
+  // api_key 存 System Access Token（控制台 Profile → Profile Settings → Account & Security →
+  // API Call Tokens 生成，重新生成会使旧 token 立即作废）；api_key_secret 存数字用户 ID。
+  // 实测 2026-11-24 两个关键事实：
+  //   1. New-Api-User 头必须是数字 ID（Profile Settings 页顶部 ID:），填用户名字符串
+  //      会报 "Unauthorized, New-Api-User format error"。
+  //   2. billing/subscription 与 usage 端点（sk- Key 可查）返回的是单把令牌自己的
+  //      额度/用量，不是账户余额，不采用。
+  //   换算系数 500000 quota = $1 已用两个数据点校准：quota=2425115 → $4.850230、
+  //   used_quota=72574885 → $145.149770，均与控制台「当前余额/历史消耗」精确一致。
+  anyaigc: async (platform) => {
+    const token = platform.api_key;
+    const userId = String(platform.api_key_secret || '').trim();
+    if (!token) throw new Error('AnyAIGC 需要配置 System Access Token（控制台 Profile → Account & Security → API Call Tokens 生成）');
+    if (!userId) throw new Error('AnyAIGC 需要配置数字用户 ID（Profile Settings 页顶部 ID:，仅数字）');
+    if (!/^\d+$/.test(userId)) throw new Error(`AnyAIGC 用户 ID 必须是数字（Profile Settings 页顶部 ID:），当前值不是数字`);
+    const url = platform.balance_api_url || 'https://anyaigc.ai/api/user/self';
+    const res = await fetch(url, {
+      headers: {
+        Authorization: `Bearer ${token}`,
+        'New-Api-User': userId,
+      },
+    });
+    const text = await res.text();
+    let data;
+    try { data = JSON.parse(text); } catch { data = {}; }
+    if (!res.ok) {
+      const msg = data?.message || `HTTP ${res.status}`;
+      throw new Error(`AnyAIGC 余额查询失败: ${msg}`);
+    }
+    const d = data?.data || {};
+    const quota = Number(d.quota);
+    if (!Number.isFinite(quota)) throw new Error(`AnyAIGC 未返回 quota 字段: ${text.slice(0, 200)}`);
+    // New API 惯例换算：500000 quota = $1（2026-11-24 已用控制台显示校准，见上方注释）
+    return { balance: quota / 500000, raw: { quota, used_quota: d.used_quota, request_count: d.request_count } };
+  },
+
   // 火山引擎：费用中心 QueryBalanceAcct，HMAC-SHA256 签名
   volcengine: async (platform) => {
     const ak = platform.api_key;
