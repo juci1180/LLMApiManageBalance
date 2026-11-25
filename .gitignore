@@ -9,6 +9,10 @@ config/
 *.backup-before-sanitize
 .env
 .env.*
+
+# 平台密钥环境文件（用户手工维护，绝不上传）
+env.kimi
+env.*
 scripts/.tmp/
 
 # Playwright / Zhipu 浏览器登录数据（含会话与 Cookie，不上传）
