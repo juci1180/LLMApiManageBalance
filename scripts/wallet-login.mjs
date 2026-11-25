@@ -11,7 +11,7 @@ import path from 'node:path';
 import { dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import db, { initSchema } from '../src/db/index.js';
-import { parseScrapeRule, STORAGE_DIR, STORAGE_KEY_BY_NAME, BROWSER_ARGS, SAFE_KEYWORD_BY_KEY, detectCarrierLoggedIn, storageKeyFor, ruleKeyFor, CARRIER_ENTRY_URLS, enrichRuleWithBuiltin, CARRIER_RULES, clickByText } from '../src/services/scraper_wallets.mjs';
+import { parseScrapeRule, STORAGE_DIR, STORAGE_KEY_BY_NAME, BROWSER_ARGS, SAFE_KEYWORD_BY_KEY, detectCarrierLoggedIn, storageKeyFor, ruleKeyFor, CARRIER_ENTRY_URLS, enrichRuleWithBuiltin, CARRIER_RULES, clickByText, normalizePageText } from '../src/services/scraper_wallets.mjs';
 import { missingRequiredCookies } from '../src/services/session_status.mjs';
 import { markSessionLoggedIn, parseMaskedAccount } from '../src/services/session_meta.mjs';
 
@@ -109,7 +109,7 @@ async function waitLoggedIn(page, keyword, { timeoutMs = 10 * 60 * 1000, isCarri
     if (closed) return false; // 窗口被用户关闭 → 放弃该平台
     try {
       const url = page.url();
-      const text = await page.evaluate(() => (document.body ? document.body.innerText : ''));
+      const text = normalizePageText(await page.evaluate(() => (document.body ? document.body.innerText : '')));
       // keyword 可能是字符串或候选数组（运营商页面文案多变，任一命中即算命中）
       const kws = Array.isArray(keyword) ? keyword : [keyword];
       // isCarrier 由调用方传入（见函数签名）

@@ -68,6 +68,15 @@ export function parseScrapeRule(raw) {
   return { keyword, keywords, regex, max, entries };
 }
 
+// 页面文本归一化：剥离零宽/不可见字符（零宽空格 U+200B-200D、BOM U+FEFF、
+// 词接合符 U+2060、软连字符 U+00AD）。
+// 实测（2026-11-25）：智谱财务总览页的「当前余额」标签文本里夹着零宽字符——
+// 肉眼和日志样本都看不出差别，但 includes/字面正则全部匹配失败，
+// 登录检测干等 10 分钟超时、抓取关键字永远等不到。登录与抓取两端统一归一化。
+export function normalizePageText(t) {
+  return String(t ?? '').replace(/[\u200B\u200C\u200D\uFEFF\u2060\u00AD]/g, '');
+}
+
 // 内置各平台"安全宽松关键字"（登录检测与抓取兜底使用）：
 // 数据库规则可能被页面编辑/误填写成带符号的坏值（如"可用余额￥ "），导致登录检测
 // 永远等不到、抓取永远失败。内置宽松词只匹配纯中文标签，页面只要出现即算命中，
@@ -85,6 +94,10 @@ export const SAFE_KEYWORD_BY_KEY = {
   // 注意：这里必须用字符串而不是候选数组——非运营商平台的内置关键字会作为单个 keyword
   // 进入 scrapeOnePage 的 targets=[rule.keyword]，数组会嵌套导致 waitForKeyword 永远等不到。
   yinchao: '当前余额',
+  // 智谱开放平台（open.bigmodel.cn，实测 2026-11-25）：登录与抓取统一打开财务总览页，
+  // 页面出现「当前余额」标签（金额在其后的 span 中）。标签文本含零宽字符，
+  // 匹配前必须先经 normalizePageText 归一化（见上）。
+  zhipu: '当前余额',
   // 三大运营商个人卡：登录后网厅右上角出现"退出登录"；部分省份版本不显示退出文字，
   // 登录后首页/余额页会出现余额标签，因此两者并用，任一命中即视为已登录
   // 注意：运营商的标签必须配合「后面跟真实数字」才算已登录，见 detectCarrierLoggedIn
@@ -431,7 +444,9 @@ async function waitForKeyword(page, keyword, { waitKeywordMs = 30000 } = {}) {
       // keyword 允许是字符串或候选数组（运营商页面文案多变）
       const list = Array.isArray(keyword) ? keyword : [keyword];
       const has = await page.evaluate((kws) => {
-        const text = document.body?.innerText || '';
+        // 零宽字符归一化（见 normalizePageText 说明）：标签里夹零宽字符时
+        // 肉眼看不出差别，但 includes 必然失败
+        const text = (document.body?.innerText || '').replace(/[\u200B\u200C\u200D\uFEFF\u2060\u00AD]/g, '');
         return kws.some((k) => text.includes(k));
       }, list);
       if (has) return { ok: true };
@@ -625,7 +640,7 @@ async function scrapeOnePage(page, { url, rule, debugLabel = '平台', waitMs = 
   }
 
 
-  const text = await page.evaluate(() => (document.body ? document.body.innerText : ''));
+  const text = normalizePageText(await page.evaluate(() => (document.body ? document.body.innerText : '')));
   const balance = extractBalance(text, rule);
   if (balance === null) {
     // 提取不到余额时，先分清「会话已失效」与「页面结构变了」——
