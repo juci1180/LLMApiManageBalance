@@ -31,11 +31,13 @@ const PRESET_PLATFORMS = [
   { key: 'carrier_cu',   name: '中国联通话费', url: 'https://www.10010.com/', rule: '' },
 ];
 
-// 从数据库动态读取所有"浏览器抓取型"平台（新添加的 scrape 平台也会被覆盖到）
+// 从数据库动态读取所有“浏览器抓取型”平台（新添加的 scrape 平台也会被覆盖到）
 // 三大运营商个人卡走 provider=carrier_* 且 balance_type=api，同样需要网厅登录态，一并纳入
+// balance_type=api_scrape（官方接口优先+抓取兜底）的平台也纳入：官方接口失败时
+// 要退回来抓取，所以它们的登录态同样得维护（实测 2026-11-25）。
 function targetsFromDb() {
   const rows = db.prepare(
-    "SELECT id, name, provider, balance_api_url, balance_json_path FROM platforms WHERE (balance_type='scrape' OR provider LIKE 'carrier_%') AND active = 1"
+    "SELECT id, name, provider, balance_api_url, balance_json_path FROM platforms WHERE (balance_type IN ('scrape','api_scrape') OR provider LIKE 'carrier_%') AND active = 1"
   ).all();
   return rows
     .filter((r) => r.balance_api_url || CARRIER_ENTRY_URLS[r.provider])

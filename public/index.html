@@ -116,7 +116,7 @@
         <div id="add-form" class="card hidden" style="margin-top:16px;">
           <h2 id="form-title">添加平台</h2>
           <div id="form-hint" class="hidden" style="background:#f0f7ff; border:1px solid #bfdbfe; border-radius:6px; padding:10px 14px; font-size:13px; color:#1e40af; margin-bottom:12px; line-height:1.7;"></div>
-          <div id="scrape-hint" class="hidden" style="background:#fef9c3; border:1px solid #fde68a; border-radius:6px; padding:10px 14px; font-size:13px; color:#854d0e; margin-bottom:12px; line-height:1.7;">🔑 浏览器抓取型无需 API Key。首次使用需先登录一次：双击项目目录的 <b>重新登录.bat</b>（或执行 <code>node scripts/wallet-login.mjs</code>），脚本会自动列出所有「浏览器抓取型」平台逐个登录（新添加的平台也会自动包含）。登录成功后保存平台，之后定时巡检自动抓取余额。<br>⚠️ 余额查询 URL 请填写该平台的钱包余额页面网址（余额显示在哪一页就填哪一页），抓取关键词对应页面上余额旁边的文字。</div>
+          <div id="scrape-hint" class="hidden" style="background:#fef9c3; border:1px solid #fde68a; border-radius:6px; padding:10px 14px; font-size:13px; color:#854d0e; margin-bottom:12px; line-height:1.7;">🔑 浏览器抓取型无需 API Key。首次使用需先登录一次：双击项目目录的 <b>重新登录.bat</b>（或执行 <code>node scripts/wallet-login.mjs</code>），脚本会自动列出所有「浏览器抓取型」平台逐个登录（新添加的平台也会自动包含）。登录成功后保存平台，之后定时巡检自动抓取余额。<br>⚠️ 余额查询 URL 请填写该平台的钱包余额页面网址（余额显示在哪一页就填哪一页），抓取关键词对应页面上余额旁边的文字。<br>💡 <b>api_scrape</b> 模式 = 先用官方接口查（更准、不会弹窗、不依赖登录态），官方接口查不到再回退到浏览器抓取。选这个模式时：API Key 必填（否则直接走抓取）；「余额查询 URL」填控制台页面地址（兜底抓取用）；「官方接口 URL / JSON path」留空则用该 provider 的内置官方接口。</div>
           <div class="grid" id="form-grid">
             <div class="field" data-field="name"><label>平台名称 *</label><input id="f-name" placeholder="如 OpenAI"></div>
             <div class="field" data-field="provider"><label>Provider</label>
@@ -128,6 +128,7 @@
                 <option value="dashscope">dashscope（阿里云百炼）</option>
                 <option value="volcengine">volcengine（火山引擎）</option>
                 <option value="moonshot">moonshot（月之暗面/Kimi）</option>
+                <option value="mimo">mimo（小米MiMo）</option>
                 <option value="minimax">minimax（MiniMax）</option>
                 <option value="zhipu">zhipu（智谱 BigModel）</option>
                 <option value="generic">generic（通用）</option>
@@ -144,12 +145,15 @@
             <div class="field" data-field="balance-type"><label>余额类型</label>
               <select id="f-balance-type" onchange="onBalanceTypeChange()">
                 <option value="api">api（官方接口，填 API Key）</option>
+                <option value="api_scrape">api_scrape（官方接口优先，失败回退浏览器抓取）</option>
                 <option value="scrape">scrape（浏览器抓取，无需 Key）</option>
                 <option value="manual">manual（手动录入）</option>
               </select>
             </div>
             <div class="field" data-field="balance-url"><label>余额查询 URL</label><input id="f-balance-url" placeholder="https://..."></div>
             <div class="field" data-field="json-path"><label>余额 JSON path</label><input id="f-json-path" placeholder="如 total_available"></div>
+            <div class="field" data-field="api-url"><label>官方接口 URL（api_scrape 模式，可选）</label><input id="f-api-url" placeholder="留空则用该 provider 的内置官方接口"></div>
+            <div class="field" data-field="api-json-path"><label>官方接口 JSON path（api_scrape 模式，可选）</label><input id="f-api-json-path" placeholder="如 data.available_balance"></div>
             <div class="field" data-field="currency"><label>币种</label><input id="f-currency" value="USD"></div>
             <div class="field" data-field="threshold"><label>充值阈值</label><input id="f-threshold" type="number" value="200"></div>
             <div class="field" data-field="recharge"><label>充值金额</label><input id="f-recharge" type="number" value="500"></div>
@@ -253,6 +257,25 @@
       carrier_ct: '中国电信个人卡',
       carrier_cu: '中国联通个人卡',
     };
+    // 平台名 → 同一账户标注文案（同一个账户余额被多个实例监控时，标明它们是同一个账户）
+    // 键是数据库里的 same_account_note 分组键，值是给用户看的说明
+    const SAME_ACCOUNT_TEXT = {
+      moonshot: '与「月之暗面」同一账户余额',
+      volcengine: '与「火山引擎」同一账户余额',
+    };
+    function sameAccountLine(p) {
+      const key = p && p.same_account_note;
+      if (!key) return '';
+      const text = SAME_ACCOUNT_TEXT[key] || ('同一账户余额（分组：' + key + '）');
+      return `<div class="pts-line" title="两个平台查的是同一个账户余额，不会生成重复充值提醒">${esc(text)}</div>`;
+    }
+    // 余额来源：如实告诉用户这个数是从官方接口还是浏览器抓取来的
+    function balanceSourceLine(p) {
+      const s = p && p.balance_source;
+      if (!s) return '';
+      const label = { api: '官方接口', scrape: '浏览器抓取', manual: '手动录入' }[s] || s;
+      return `<div class="pts-line">来源：${esc(label)}</div>`;
+    }
     function providerLabel(p) {
       return CARRIER_LABELS[p.provider] || esc(p.provider);
     }
@@ -374,7 +397,7 @@
     }
     function applyFieldVisibility(provider) {
       const cfg = FIELD_VISIBILITY[provider];
-      for (const name of ['key','key-secret','balance-type','balance-url','json-path']) {
+      for (const name of ['key','key-secret','balance-type','balance-url','json-path','api-url','api-json-path']) {
         setFieldVisible(name, cfg ? !cfg.hide.includes(name) : true);
       }
       document.querySelector('#f-key-label').innerHTML = cfg?.keyLabel || 'API Key';
@@ -382,6 +405,9 @@
     }
 
     // 余额类型切换：scrape 隐藏 Key 字段并提示首次登录，api 恢复按 provider 的字段配置
+    // api_scrape（官方接口优先+抓取兜底）：按 provider 显示凭据字段，
+    // 同时保留抓取用的「余额查询 URL / JSON path」（接口失败时要退回去抓），
+    // 并显示官方接口的两项可选配置。
     function onBalanceTypeChange() {
       const type = document.querySelector('#f-balance-type').value;
       const hint = document.querySelector('#scrape-hint');
@@ -390,9 +416,20 @@
         setFieldVisible('key-secret', false);
         setFieldVisible('balance-url', true);
         setFieldVisible('json-path', true);
+        setFieldVisible('api-url', false);
+        setFieldVisible('api-json-path', false);
+        hint.classList.remove('hidden');
+      } else if (type === 'api_scrape') {
+        applyFieldVisibility(document.querySelector('#f-provider').value);
+        setFieldVisible('balance-url', true);
+        setFieldVisible('json-path', true);
+        setFieldVisible('api-url', true);
+        setFieldVisible('api-json-path', true);
         hint.classList.remove('hidden');
       } else {
         applyFieldVisibility(document.querySelector('#f-provider').value);
+        setFieldVisible('api-url', false);
+        setFieldVisible('api-json-path', false);
         hint.classList.add('hidden');
       }
     }
@@ -670,7 +707,7 @@
       // 有浏览器抓取型平台（含三大运营商网厅抓取）时显示"全部一键登录"按钮
       const loginAllBtn = document.querySelector('#login-all-btn');
       if (loginAllBtn) {
-        const hasScrape = list.some(p => p.balance_type === 'scrape' || isCarrier(p.provider));
+        const hasScrape = list.some(p => p.balance_type === 'scrape' || p.balance_type === 'api_scrape' || isCarrier(p.provider));
         loginAllBtn.style.display = hasScrape ? '' : 'none';
       }
       // 低于阈值的平台：顶部红色预警横幅 + 表格行红色高亮（按余额从低到高排序，最缺钱的排最前）
@@ -695,15 +732,15 @@
         const isLow = p.latest_balance != null && p.latest_balance < (p.threshold ?? 200);
         return `
         <tr${isLow ? ' class="low-balance"' : ''}>
-          <td><span class="pname">${iconFor(p)}<b>${esc(p.name)}</b></span>${isCarrier(p.provider) ? `<div class="sess-box" data-pid="${p.id}"></div>` : ''}</td>
+          <td><span class="pname">${iconFor(p)}<b>${esc(p.name)}</b></span>${sameAccountLine(p)}${isCarrier(p.provider) ? `<div class="sess-box" data-pid="${p.id}"></div>` : ''}</td>
           <td>${providerLabel(p)}</td>
-          <td id="bal-cell-${p.id}">${balanceBadge(p.latest_balance, p.threshold)} ${esc(p.currency)}${pointsLine(p)}</td>
+          <td id="bal-cell-${p.id}">${balanceBadge(p.latest_balance, p.threshold)} ${esc(p.currency)}${pointsLine(p)}${balanceSourceLine(p)}</td>
           <td>${p.threshold}</td>
           <td>${p.recharge_amount}</td>
           <td>${lastQueryCell(p)}</td>
           <td>${p.latest_error ? `<span class="badge err" title="${esc(p.latest_error)}">抓取失败</span>` : (p.active ? '<span class="badge ok">启用</span>' : '<span class="badge err">停用</span>')}</td>
           <td class="row-actions">
-            ${(p.balance_type === 'scrape' || isCarrier(p.provider)) ? `<button class="primary" onclick="openLogin(${p.id})" id="login-btn-${p.id}">登录</button>` : ''}
+            ${(p.balance_type === 'scrape' || p.balance_type === 'api_scrape' || isCarrier(p.provider)) ? `<button class="primary" onclick="openLogin(${p.id})" id="login-btn-${p.id}">登录</button>` : ''}
             <button id="refresh-btn-${p.id}" onclick="refreshOne(${p.id})">刷新余额</button>
             <button onclick="inputBalance(${p.id})">录入余额</button>
             <button onclick="editPlatform(${p.id})">编辑</button>
@@ -918,6 +955,8 @@
       document.querySelector('#f-balance-type').value = 'api';
       document.querySelector('#f-balance-url').value = '';
       document.querySelector('#f-json-path').value = '';
+      document.querySelector('#f-api-url').value = '';
+      document.querySelector('#f-api-json-path').value = '';
       document.querySelector('#f-currency').value = 'USD';
       document.querySelector('#f-threshold').value = '200';
       document.querySelector('#f-recharge').value = '500';
@@ -946,6 +985,8 @@
       onBalanceTypeChange();
       document.querySelector('#f-balance-url').value = p.balance_api_url || '';
       document.querySelector('#f-json-path').value = p.balance_json_path || '';
+      document.querySelector('#f-api-url').value = p.api_url || '';
+      document.querySelector('#f-api-json-path').value = p.api_json_path || '';
       document.querySelector('#f-currency').value = p.currency || 'USD';
       document.querySelector('#f-threshold').value = p.threshold ?? 200;
       document.querySelector('#f-recharge').value = p.recharge_amount ?? 500;
@@ -959,7 +1000,8 @@
         name: val('#f-name'), provider: val('#f-provider'), api_key: val('#f-key'),
         api_key_secret: val('#f-key-secret'),
         balance_type: val('#f-balance-type'), balance_api_url: val('#f-balance-url'),
-        balance_json_path: val('#f-json-path'), currency: val('#f-currency'),
+        balance_json_path: val('#f-json-path'),
+        api_url: val('#f-api-url'), api_json_path: val('#f-api-json-path'), currency: val('#f-currency'),
         threshold: parseFloat(val('#f-threshold')), recharge_amount: parseFloat(val('#f-recharge')),
         target_amount: val('#f-target') ? parseFloat(val('#f-target')) : null,
       };

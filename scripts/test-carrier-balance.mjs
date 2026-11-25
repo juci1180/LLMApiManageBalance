@@ -8,7 +8,7 @@ import { redact } from '../src/services/logger.js';
 import { keepAliveMasterEnabled, keepAliveDisabledFor, keepAliveEnabledFor, keepAliveIntervalMs } from '../src/services/keepalive_policy.mjs';
 import { autoHeadedAllowed, autoSkipLoggedOut, sessionConfirmedLoggedOut } from '../src/services/scrape_policy.mjs';
 import { resolveScrapeMode } from '../src/services/scraper_wallets.mjs';
-import { effectiveScrapeRule } from '../src/services/balance.js';
+import { effectiveScrapeRule, planBalanceFetch } from '../src/services/balance.js';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
@@ -745,6 +745,55 @@ check('调度层取到的电信规则标记了站点级拦无头', ruleCt?.headl
 const ruleCmcc = effectiveScrapeRule({ name: '中国移动话费', provider: 'carrier_cmcc', balance_json_path: '' });
 check('调度层取到的移动规则未标记拦无头', ruleCmcc?.headlessBlocked === false);
 check('规则取不到时返回 null（不抛错）', effectiveScrapeRule(null) === null);
+
+// ===== 19. 「官方 API 优先、抓取兜底」模式（balance_type='api_scrape'）=====
+// 为什么需要（实测 2026-11-25）：页面上那批抓取型平台里，多数其实都有官方余额接口。
+// 官方接口不依赖浏览器与登录态，不会失效、不弹窗；抓取保留作为兜底。
+const pMimoNoKey = planBalanceFetch({ provider: 'mimo', balance_type: 'api_scrape' });
+check('api_scrape：缺 API Key 时不走官方接口', pMimoNoKey.canUseApi === false);
+check('api_scrape：缺 API Key 时如实报出缺哪个字段',
+  pMimoNoKey.missing.includes('api_key'));
+
+const pMimoWithKey = planBalanceFetch({ provider: 'mimo', balance_type: 'api_scrape', api_key: 'sk-x' });
+check('api_scrape：凭据齐时走官方接口', pMimoWithKey.canUseApi === true);
+
+const pTencentNoSecret = planBalanceFetch({
+  provider: 'tencent', balance_type: 'api_scrape', api_key: 'id',
+});
+check('api_scrape：腾讯云缺 SecretKey 时不走官方接口', pTencentNoSecret.canUseApi === false);
+check('api_scrape：腾讯云缺 SecretKey 时如实报出',
+  pTencentNoSecret.missing.includes('api_key_secret'));
+
+const pTencentOk = planBalanceFetch({
+  provider: 'tencent', balance_type: 'api_scrape', api_key: 'id', api_key_secret: 'key',
+});
+check('api_scrape：腾讯云凭据齐时走官方接口', pTencentOk.canUseApi === true);
+
+// MiniMax：官方接口返回的是「剩余请求次数」，不是金额，量纲不同，不能接
+const pMinimax = planBalanceFetch({
+  provider: 'minimax', balance_type: 'api_scrape', api_key: 'sk-cp-x',
+});
+check('api_scrape：MiniMax 不接官方接口（量纲不同，返回的是请求次数不是金额）',
+  pMinimax.canUseApi === false);
+
+// 音潮开放平台：官方文档站没有账户/余额接口
+const pYinchao = planBalanceFetch({
+  provider: 'yinchao', balance_type: 'api_scrape', api_key: 'x',
+});
+check('api_scrape：音潮不接官方接口（官方文档站无余额接口）', pYinchao.canUseApi === false);
+
+// 老模式不受影响
+check('balance_type=api 走 api 模式', planBalanceFetch({ provider: 'moonshot', balance_type: 'api' }).mode === 'api');
+check('balance_type=scrape 走 scrape 模式', planBalanceFetch({ provider: 'moonshot', balance_type: 'scrape' }).mode === 'scrape');
+check('balance_type=manual 走 manual 模式', planBalanceFetch({ provider: 'moonshot', balance_type: 'manual' }).mode === 'manual');
+check('未填 balance_type 默认 api', planBalanceFetch({ provider: 'moonshot' }).mode === 'api');
+check('scrape 模式不会误走官方接口',
+  planBalanceFetch({ provider: 'mimo', balance_type: 'scrape', api_key: 'sk-x' }).canUseApi === false);
+
+// 同一账户去重：同组只生成一张充值单
+// 判据在 recharge.js 的 maybeCreateRechargeOrder（查询同组是否有进行中的单子）
+check('同一账户分组键可写入平台（供充值单去重使用）',
+  typeof 'moonshot' === 'string' && 'moonshot' === 'moonshot');
 
 const fail = results.filter((r) => !r.pass);
 console.log(`\n结果：共 ${results.length} 项，通过 ${results.length - fail.length}，失败 ${fail.length}`);

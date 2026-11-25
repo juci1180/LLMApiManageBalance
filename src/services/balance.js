@@ -119,6 +119,31 @@ async function scrapeCarrier(platform, providerKey, trigger = 'manual') {
   return { balance, raw: {}, unit: platform.currency || '元', scraped: true };
 }
 
+// 官方余额 API 查询器的元数据（哪些 provider 支持官方 API、需哪些凭据、余额量纲）
+//
+// 为什么需要这张表（实测 2026-11-25）：「官方 API 优先、抓取兜底」模式下，
+// 必须先判断“该不该试官方 API”，而不是无脑试一次失败再回退（每次巡检多一条错误日志）。
+// 判定依据有两个：
+//   1. 凭据是否齐（缺凭据试了必然失败，只是噪音）；
+//   2. 量纲是否与抓取一致（MiniMax 的 /v1/token_plan/remains 返回的是「请求次数」，
+//      不是金额——把它写进余额历史会污染 CNY 余额曲线，所以 MiniMax 不进这张表）。
+//
+// 官方接口出处（2026-11-25 核实官方文档）：
+//   moonshot   GET  https://api.moonshot.cn/v1/users/me/balance     → data.available_balance（元）
+//   tencent    POST billing.tencentcloudapi.com DescribeAccountBalance → Response.RealBalance（分→元）
+//   dashscope  GET  business.aliyuncs.com QueryAccountBalance     → Data.AvailableAmount（元）
+//   volcengine GET  billing.volcengineapi.com QueryBalanceAcct    → Result.AvailableBalance（元）
+//   mimo       GET  https://api.xiaomimimo.com/v1/platform/balance → balance_infos[0].total_available（元）
+//   zhipu      GET  open.bigmodel.cn/api/biz/account/...          → data.balance（元，控制台内部接口，非公开 API）
+const API_QUERY_PROVIDERS = {
+  moonshot:   { needs: ['api_key'] },
+  tencent:    { needs: ['api_key', 'api_key_secret'] },
+  dashscope:  { needs: ['api_key', 'api_key_secret'] },
+  volcengine: { needs: ['api_key', 'api_key_secret'] },
+  mimo:       { needs: ['api_key'] },
+  zhipu:      { needs: ['api_key_secret'] },
+};
+
 // 内置平台余额查询器
 const providers = {
   // OpenAI：admin key + /v1/organization/costs 算本月消耗，余额 = 预付额(platform.balance_json_path 存预付总额，默认 100) - 本月消耗
@@ -403,45 +428,44 @@ const providers = {
     }
   },
 
-  // 小米MiMo：余额查询接口，支持api-key header和Authorization Bearer两种方式
+  // 小米MiMo：官方余额接口（2026-11-25 按官方文档核实）
+  //   GET https://api.xiaomimimo.com/v1/platform/balance
+  //   鉴权二选一：api-key 头 或 Authorization: Bearer
+  //   余额：balance_infos[0].total_available（总可用余额 = 现金 + 赠金 + 可用授信，单位元）
+  // 修正记录：原实现试的是 /v1/balance、/v1/quota、/v1/user/balance、mimo.mi.com/api/v1/balance，
+  //   官方文档里没有这些端点（实测 /v1/quota 返回 404），属于凭猜测拼的路径。
   mimo: async (platform) => {
     if (!platform.api_key) throw new Error('小米MiMo需要配置API Key');
-    // 尝试几个可能的余额查询URL
-    const urls = [
-      platform.balance_api_url || 'https://api.xiaomimimo.com/v1/balance',
-      'https://api.xiaomimimo.com/v1/quota',
-      'https://api.xiaomimimo.com/v1/user/balance',
-      'https://mimo.mi.com/api/v1/balance',
-    ];
-    // 先试api-key header，再试Authorization Bearer
+    const url = platform.api_url || 'https://api.xiaomimimo.com/v1/platform/balance';
     const headersOptions = [
       { 'api-key': platform.api_key, 'Content-Type': 'application/json' },
       { 'Authorization': `Bearer ${platform.api_key}`, 'Content-Type': 'application/json' },
     ];
-    // 遍历所有组合
-    for (const url of urls) {
-      for (const headers of headersOptions) {
-        try {
-          const res = await fetch(url, { headers });
-          if (!res.ok) continue; // 这个组合不行，继续试下一个
-          const data = await res.json();
-          console.log('小米MiMo API返回:', JSON.stringify(data, null, 2));
-          // 先尝试用户指定的路径，再尝试常见路径
-          const balance = getByPath(data, platform.balance_json_path || 'data.balance')
-            ?? getByPath(data, 'balance')
-            ?? getByPath(data, 'remaining')
-            ?? getByPath(data, 'quota')
-            ?? getByPath(data, 'data.remaining')
-            ?? getByPath(data, 'data.quota');
-          if (balance != null) {
-            return { balance, raw: data, unit: '元' };
-          }
-        } catch (e) {
-          // 继续试下一个组合
+    let lastErr = null;
+    for (const headers of headersOptions) {
+      try {
+        const res = await fetch(url, { headers });
+        const text = await res.text();
+        if (!res.ok) {
+          lastErr = new Error(`HTTP ${res.status} ${text.slice(0, 120)}`);
+          continue;
         }
+        let data = {};
+        try { data = JSON.parse(text); } catch { lastErr = new Error('返回不是合法 JSON'); continue; }
+        // 先按平台配置的路径取，再按官方文档的字段名兜底
+        const balance = getByPath(data, platform.api_json_path || 'balance_infos[0].total_available')
+          ?? getByPath(data, 'balance_infos[0].total_available')
+          ?? getByPath(data, 'balance_infos[0].cash_balance');
+        if (balance == null) {
+          lastErr = new Error(`未在返回中找到余额字段: ${text.slice(0, 150)}`);
+          continue;
+        }
+        return { balance: Number(balance), raw: data, unit: '元' };
+      } catch (e) {
+        lastErr = e;
       }
     }
-    throw new Error('小米MiMo余额查询失败，所有URL和认证方式都尝试过了');
+    throw new Error(`小米MiMo余额查询失败: ${lastErr?.message || '未知错误'}`);
   },
 
   // 三大运营商个人卡（手机 SIM 卡）：运营商没有面向个人开放的查余额 API，
@@ -491,6 +515,9 @@ export async function fetchBalance(platform, trigger = 'manual') {
   // 其余情况优先按 provider 匹配专用查询器，再兑底到 generic
   const type = platform.balance_type || 'api';
   const provider = platform.provider;
+  if (type === 'api_scrape') {
+    return await fetchBalanceApiFirst(platform, trigger);
+  }
   const fetcher =
     (type === 'scrape' || type === 'manual')
       ? providers[type]
@@ -498,7 +525,95 @@ export async function fetchBalance(platform, trigger = 'manual') {
         providers[type] ||
         providers.generic;
   const result = await fetcher(platform, trigger);
-  return result;
+  // 统一标注来源：界面上要能回答「这个余额是从哪来的」
+  // （官方接口 / 浏览器抓取 / 手动录入），否则无法区分真余额与陈旧数据
+  return { ...result, source: result?.source || (type === 'manual' ? 'manual' : type === 'scrape' ? 'scrape' : 'api') };
+}
+
+// 「官方 API 优先、抓取兜底」模式的路由判定（纯函数，供单测直接验证）
+//
+// 返回：
+//   mode       'api_scrape' / 'api' / 'scrape' / 'manual'
+//   provider   provider 键
+//   canUseApi  官方接口能否直接用（provider 有专用查询器 且 凭据齐）
+//   missing    缺哪些凭据字段（给界面/日志用）
+export function planBalanceFetch(platform) {
+  const type = platform.balance_type || 'api';
+  const provider = platform.provider;
+  if (type === 'api_scrape') {
+    const meta = API_QUERY_PROVIDERS[provider] || null;
+    const missing = meta ? meta.needs.filter((f) => !platform[f]) : [];
+    return {
+      mode: 'api_scrape',
+      provider,
+      meta,
+      missing,
+      canUseApi: Boolean(meta && missing.length === 0 && providers[provider]),
+    };
+  }
+  if (type === 'scrape' || type === 'manual') {
+    return { mode: type, provider, canUseApi: false, missing: [] };
+  }
+  return {
+    mode: 'api',
+    provider,
+    canUseApi: Boolean(provider && providers[provider]),
+    missing: [],
+  };
+}
+
+// 「官方 API 优先、抓取兜底」模式（balance_type='api_scrape'）
+//
+// 为什么需要这个模式（实测 2026-11-25）：页面上有一批“浏览器抓取型”平台，
+// 它们其实都有官方余额接口，只是当时没找到文档、或文档里没写清楚：
+//   Kimi/月之暗面 GET /v1/users/me/balance      → available_balance（元）
+//   小米MiMo       GET /v1/platform/balance      → balance_infos[0].total_available（元）
+//   腾讯云        DescribeAccountBalance         → Response.RealBalance（分→元）
+//   阿里云        QueryAccountBalance            → Data.AvailableAmount（元）
+//   火山引擎      QueryBalanceAcct               → Result.AvailableBalance（元）
+//   智谱          控制台内部接口（非公开 API）    → data.balance（元）
+// 抓取依赖浏览器 + 登录态，会弹窗、会失效、会因站点改版失效；
+// 官方接口没有这些问题。所以：官方接口优先，查不到再退回抓取（保底）。
+//
+// 为什么要先判“凭据齐不齐”（API_QUERY_PROVIDERS）：
+//   没配密钥时试官方接口必然 401/403，每次巡检都留下一条假错误日志，
+//   还把真正的错误淹没。所以凭据不全就直接走抓取，不试官方接口。
+//
+// 为什么 MiniMax 不在表里：
+//   它的官方接口 /v1/token_plan/remains 返回的是「剩余请求次数」，不是金额，
+//   量纲和抓取到的「可用额度（元）」完全不同，写进余额历史会把曲线搞乱。
+async function fetchBalanceApiFirst(platform, trigger) {
+  const plan = planBalanceFetch(platform);
+  if (plan.canUseApi) {
+    // 官方接口的 URL / JSON path 可单独配置（api_url / api_json_path）。
+    // 关键：两者都**不能**回退到 balance_api_url / balance_json_path——
+    // 那是抓取用的配置（控制台页面地址 + 抓取规则 JSON），
+    // 当成接口地址去请求只会拿回一个 HTML 页面。
+    // 只传 api_url / api_json_path，留空则由各查询器用自己的内置默认值。
+    const apiPlatform = {
+      ...platform,
+      balance_api_url: platform.api_url || null,
+      balance_json_path: platform.api_json_path || null,
+    };
+    try {
+      const result = await providers[plan.provider](apiPlatform, trigger);
+      if (result && result.balance != null) {
+        return { ...result, source: 'api' };
+      }
+      throw new Error('官方接口未返回余额');
+    } catch (err) {
+      // 官方接口失败不直接报错：退回去抓取（浏览器登录态往往还在）
+      console.warn(
+        `[balance] ${platform.name} 官方接口查询失败，退回浏览器抓取: ${err.message}`
+      );
+    }
+  }
+  // 抓取兜底：用原平台的抓取配置（balance_api_url 是控制台页面，不是接口地址）
+  const result = await providers.scrape(
+    { ...platform, balance_api_url: platform.balance_api_url },
+    trigger
+  );
+  return { ...result, source: 'scrape' };
 }
 
 // 写入一个设置项
@@ -608,13 +723,17 @@ export async function refreshPlatformBalance(platformId, { trigger = 'manual' } 
   const isManual = (platform.balance_type || 'api') === 'manual';
 
   try {
-    const { balance, raw } = await fetchBalance(platform, trigger);
-    console.log(`[refresh] 获取余额成功: balance=${balance}`);
+    const { balance, raw, source } = await fetchBalance(platform, trigger);
+    console.log(`[refresh] 获取余额成功: balance=${balance} source=${source || '未知'}`);
     if (balance != null) {
       db.prepare(
         'INSERT INTO balance_history (platform_id, balance, currency) VALUES (?, ?, ?)'
       ).run(platformId, balance, platform.currency);
       console.log(`[refresh] 余额已保存到历史记录`);
+      // 记录余额来源（api / scrape / manual）：界面要如实告知用户这个数的出处
+      if (source) {
+        db.prepare('UPDATE platforms SET balance_source = ? WHERE id = ?').run(source, platformId);
+      }
       // 附加货币（如 RunningHub 积分 remainPoint）：随查询落库仅展示，不参与预警/充值
       if (raw && raw.remainPoint != null) {
         const pt = Number(raw.remainPoint);

@@ -319,13 +319,14 @@ export async function registerRoutes(fastify) {
     try {
       const info = db.prepare(`
         INSERT INTO platforms (name, provider, base_url, api_key, api_key_secret, balance_type, balance_api_url,
-          balance_json_path, currency, threshold, recharge_amount, target_amount, active)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+          balance_json_path, currency, threshold, recharge_amount, target_amount, active, same_account_note, api_url, api_json_path)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
       `).run(
         b.name, b.provider || 'generic', b.base_url || null, b.api_key || null, b.api_key_secret || null,
         b.balance_type || 'api', b.balance_api_url || null, b.balance_json_path || null,
         b.currency || 'USD', b.threshold ?? 200, b.recharge_amount ?? 500,
-        b.target_amount ?? null, b.active ?? 1
+        b.target_amount ?? null, b.active ?? 1,
+        b.same_account_note || null, b.api_url || null, b.api_json_path || null
       );
       return { id: info.lastInsertRowid };
     } catch (err) {
@@ -345,14 +346,17 @@ export async function registerRoutes(fastify) {
     db.prepare(`
       UPDATE platforms SET name=?, provider=?, base_url=?, api_key=?, api_key_secret=?, balance_type=?,
         balance_api_url=?, balance_json_path=?, currency=?, threshold=?, recharge_amount=?,
-        target_amount=?, active=?, updated_at=datetime('now','localtime')
+        target_amount=?, active=?, same_account_note=?, api_url=?, api_json_path=?,
+        updated_at=datetime('now','localtime')
       WHERE id=?
     `).run(
       b.name ?? existing.name, b.provider ?? existing.provider, b.base_url ?? existing.base_url,
       apiKey, apiKeySecret, b.balance_type ?? existing.balance_type, b.balance_api_url ?? existing.balance_api_url,
       b.balance_json_path ?? existing.balance_json_path, b.currency ?? existing.currency,
       b.threshold ?? existing.threshold, b.recharge_amount ?? existing.recharge_amount,
-      b.target_amount ?? existing.target_amount, b.active ?? existing.active, id
+      b.target_amount ?? existing.target_amount, b.active ?? existing.active,
+      b.same_account_note ?? existing.same_account_note,
+      b.api_url ?? existing.api_url, b.api_json_path ?? existing.api_json_path, id
     );
     return { ok: true };
   });

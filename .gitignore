@@ -33,3 +33,6 @@ scripts/_*.mjs
 test_*.mjs
 fix_*.cjs
 start-chrome-debug.cmd
+
+# 项目根下的临时目录（诊断脚本、探测产物、临时日志）
+.tmp/

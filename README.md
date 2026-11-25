@@ -142,8 +142,42 @@ config.json 的 `scrape` 字段控制**自动**巡检要不要开浏览器窗口
 每个平台可配置 `balance_type`：
 
 - **api**：官方接口，填 `balance_api_url` + `balance_json_path`（返回 JSON 中余额值的路径）
+- **api_scrape**：官方接口优先，查不到再回退浏览器抓取（两者都保留，见下节）
 - **scrape**：浏览器抓取钱包页（见上「一次性登录」）；`balance_api_url` 填钱包页面网址，`balance_json_path` 填提取规则（纯关键字如 `可用额度`，或 `{"keyword":"可用额度","max":10000000}`）
 - **manual**：手动录入，页面「录入余额」按钮
+
+### 官方接口优先、抓取兜底（api_scrape）
+
+实测（2026-11-25）核对了页面上「浏览器抓取型」各平台的官方文档，发现其中多数其实**都有官方余额接口**：
+
+| 平台 | 官方接口 | 余额字段 | 凭据 |
+|------|----------|----------|------|
+| Kimi / 月之暗面 | `GET api.moonshot.cn/v1/users/me/balance` | `data.available_balance`（元） | API Key |
+| 小米 MiMo | `GET api.xiaomimimo.com/v1/platform/balance` | `balance_infos[0].total_available`（元） | API Key |
+| 腾讯云 | `POST billing.tencentcloudapi.com` `DescribeAccountBalance` | `Response.RealBalance`（分→元） | SecretId + SecretKey |
+| 阿里云 | `GET business.aliyuncs.com` `QueryAccountBalance` | `Data.AvailableAmount`（元） | AK + SK |
+| 火山引擎 | `GET billing.volcengineapi.com` `QueryBalanceAcct` | `Result.AvailableBalance`（元） | AK + SK |
+| 智谱 | `GET open.bigmodel.cn/api/biz/account/...`（控制台内部接口，非公开） | `data.balance`（元） | 控制台 Token |
+
+`api_scrape` 模式下：官方接口成功就用它（不依赖浏览器与登录态，不会失效、不弹窗）；官方接口失败（未配密钥 / 接口报错）自动回退浏览器抓取，登录态还在就仍能取到余额。
+
+- `api_url` / `api_json_path`：官方接口地址与余额字段路径，留空则用该 provider 的内置默认值
+- `balance_api_url` / `balance_json_path`：抓取用的控制台页面地址与提取规则（兜底路径用）
+- 缺密钥时**不试**官方接口（否则每轮巡检都留一条假错误日志），直接走抓取
+- MiniMax **不接**官方接口：它的 `/v1/token_plan/remains` 返回的是「剩余请求次数」，量纲与「可用额度（元）」不同，混用会污染余额曲线
+- 音潮开放平台没有官方余额接口，保持纯抓取
+- 界面上「余额」格会标出这次的来源（官方接口 / 浏览器抓取 / 手动录入）
+
+```bash
+node scripts/setup-api-balance-platforms.mjs   # 把抓取型平台接上官方 API
+```
+
+### 同一账户标注
+
+同一个账户余额被多个平台实例监控时（如 id=13「月之暗面」与 id=16「Kimi」都查 `api.moonshot.cn/v1/users/me/balance`），在 `same_account_note` 写同一个分组键：
+
+- 界面在平台名下方标明「与「月之暗面」同一账户余额」
+- 同一分组只生成**一张**充值单，不会重复提醒你给同一个账户充值
 
 ### 三大运营商个人卡（手机 SIM 卡）
 

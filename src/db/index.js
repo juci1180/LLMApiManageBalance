@@ -56,7 +56,18 @@ export async function initSchema() {
       last_query_status TEXT,
       last_success_at TEXT,
       -- 平台附加展示数据（JSON）：当前存 RunningHub 积分 remainPoint，仅展示用
-      extra_json TEXT
+      extra_json TEXT,
+      -- 同一账户标注：两个平台实例查的是同一个账户余额时，在此写同一个分组键
+      -- （如 'moonshot'）。界面显示在平台名下方（如「与「月之暗面」同一账户」），
+      -- 同组只生成一张充值单，避免重复提醒
+      same_account_note TEXT,
+      -- 官方 API 查询配置（balance_type='api_scrape' 时用；余额查询方式为 'api' 的老实例
+      -- 仍用 balance_api_url / balance_json_path，此处仅给「API 优先+抓取兜底」模式用）
+      api_url TEXT,
+      api_json_path TEXT,
+      -- 最近一次余额的来源：'api'（官方接口）/ 'scrape'（浏览器抓取）/ 'manual'（手动录入）
+      -- 界面上要如实告诉用户这个数是从哪来的，否则“没抓到但显示有余额”无法分辨
+      balance_source TEXT
     );
 
     CREATE TABLE IF NOT EXISTS balance_history (
@@ -141,6 +152,20 @@ export async function initSchema() {
     const eNames = eCols.length ? eCols[0].values.map((r) => r[1]) : [];
     if (!eNames.includes('extra_json')) {
       db.run('ALTER TABLE platforms ADD COLUMN extra_json TEXT');
+    }
+    // 迁移：同一账户标注（id=13「月之暗面」与 id=16「Kimi」查同一个账户）
+    if (!eNames.includes('same_account_note')) {
+      db.run('ALTER TABLE platforms ADD COLUMN same_account_note TEXT');
+    }
+    // 迁移：官方 API 查询配置（api_scrape 模式）
+    for (const col of ['api_url', 'api_json_path']) {
+      if (!eNames.includes(col)) {
+        db.run(`ALTER TABLE platforms ADD COLUMN ${col} TEXT`);
+      }
+    }
+    // 迁移：最近一次余额的来源（api / scrape / manual）
+    if (!eNames.includes('balance_source')) {
+      db.run('ALTER TABLE platforms ADD COLUMN balance_source TEXT');
     }
   } catch {}
 

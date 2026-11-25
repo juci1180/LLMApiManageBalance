@@ -43,6 +43,20 @@ export function maybeCreateRechargeOrder(platformId) {
   ).get(platformId);
   if (ongoing) return null;
 
+  // 同一账户去重：两个平台实例监控的是同一个账户余额时（如「Kimi」与「月之暗面」
+  // 都指向 api.moonshot.cn/v1/users/me/balance），余额会同时低于阈值，
+  // 于是生成两张充值单、发两次提醒——用户却只需要充一次钱。
+  // 同一分组（same_account_note）里已有进行中的单子就不再生成。
+  if (platform.same_account_note) {
+    const groupOngoing = db.prepare(
+      `SELECT o.id, o.platform_id FROM recharge_orders o
+       JOIN platforms p ON p.id = o.platform_id
+       WHERE p.same_account_note = ? AND o.status IN ('pending','notified','paid')
+       LIMIT 1`
+    ).get(platform.same_account_note);
+    if (groupOngoing) return null;
+  }
+
   // 计算充值金额
   let amount = platform.recharge_amount ?? 500;
   if (platform.target_amount != null) {

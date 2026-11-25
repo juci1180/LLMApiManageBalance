@@ -17,7 +17,7 @@ const db = new SQL.Database(readFileSync(dbFile));
 
 const res = db.exec(
   "SELECT id, name, provider, balance_api_url, balance_json_path FROM platforms " +
-  "WHERE (balance_type='scrape' OR provider LIKE 'carrier_%') AND active=1"
+  "WHERE (balance_type IN ('scrape','api_scrape') OR provider LIKE 'carrier_%') AND active=1"
 );
 if (!res.length) {
   console.log('数据库中没有浏览器抓取型平台，请先运行 node scripts/setup-wallet-platforms.mjs 或 node scripts/setup-carrier-platforms.mjs');
