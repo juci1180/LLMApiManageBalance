@@ -295,7 +295,7 @@
         url:'https://console.cloud.tencent.com/expense', jsonPath:'{"keyword":"可用余额","max":10000000}',
         hint:'浏览器方式：无需 API Key，打开腾讯云费用中心读「账户余额」。首次需运行 <code>node scripts/wallet-login.mjs</code> 登录一次。' },
       { provider:'scrape', name:'MIMO', balanceType:'scrape', currency:'CNY', threshold:200,
-        url:'https://platform.xiaomimimo.com/console/balance', jsonPath:'{"keyword":"现金余额","max":10000000}',
+        url:'https://platform.xiaomimimo.com/console/balance', jsonPath:'{"keyword":"余额","regex":"余额[^\\\\d¥￥]{0,12}?[¥￥]\\\\s*(-?\\\\d[\\\\d,]*(?:\\\\.[0-9]+)?)","max":10000000}',
         hint:'浏览器方式：无需 API Key，打开小米 MiMo 控制台余额页。首次需运行 <code>node scripts/wallet-login.mjs</code> 登录一次。' },
       { provider:'scrape', name:'Kimi', balanceType:'scrape', currency:'CNY', threshold:200,
         url:'https://platform.kimi.com/console/account', jsonPath:'{"keyword":"可用余额","max":10000000}',
