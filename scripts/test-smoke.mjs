@@ -262,7 +262,55 @@ try {
   check('失败后未成功过，不标黄', lqAfter?.query_stale === false);
   await api('DELETE', `/api/platforms/${lqFailId}`);
 
-  // ===== 10. 收尾：测试数据清零 =====
+  // ===== 10. 同一账户去重（同组只生成一张充值单）=====
+  // 场景：id=13「月之暗面」与 id=16「Kimi」查的是同一个账户余额，
+  // 余额同时低于阈值时若各生成一张单，会重复提醒用户给同一账户充值。
+  // 用 manual 型平台模拟（余额靠录入，不依赖真实接口）。
+  const saA = await api('POST', '/api/platforms', {
+    name: '同账户测试A', provider: 'generic', balance_type: 'manual',
+    same_account_note: 'moonshot', currency: 'CNY', threshold: 200, recharge_amount: 500,
+  });
+  const saB = await api('POST', '/api/platforms', {
+    name: '同账户测试B', provider: 'generic', balance_type: 'manual',
+    same_account_note: 'moonshot', currency: 'CNY', threshold: 200, recharge_amount: 500,
+  });
+  const saIdA = saA.json.id, saIdB = saB.json.id;
+  check('创建同组两个平台', Number.isFinite(saIdA) && Number.isFinite(saIdB));
+
+  // 同一账户标注要能从列表接口读到（界面靠它显示「与「月之暗面」同一账户余额」）
+  const saList = (await api('GET', '/api/platforms')).json;
+  check('列表接口返回同一账户标注',
+    saList.find((x) => x.id === saIdA)?.same_account_note === 'moonshot'
+    && saList.find((x) => x.id === saIdB)?.same_account_note === 'moonshot');
+
+  // 两个平台余额都低于阈值
+  await api('POST', `/api/platforms/${saIdA}/balance`, { balance: 10 });
+  await api('POST', `/api/platforms/${saIdB}/balance`, { balance: 12 });
+  await api('POST', '/api/monitor/run');
+
+  const saOrders = (await api('GET', '/api/orders')).json?.filter(
+    (o) => o.platform_id === saIdA || o.platform_id === saIdB
+  );
+  // 关键断言：同组只生成一张单（两个余额都低，但账户只有一个）
+  check('同一账户只生成一张充值单（不重复提醒）',
+    Array.isArray(saOrders) && saOrders.length === 1, `len=${saOrders?.length}`);
+
+  // 不同组的平台不受影响：仍应各自生成单
+  const saC = await api('POST', '/api/platforms', {
+    name: '非同组测试', provider: 'generic', balance_type: 'manual',
+    currency: 'CNY', threshold: 200, recharge_amount: 500,
+  });
+  await api('POST', `/api/platforms/${saC.json.id}/balance`, { balance: 8 });
+  await api('POST', '/api/monitor/run');
+  const saCOrders = (await api('GET', '/api/orders')).json?.filter((o) => o.platform_id === saC.json.id);
+  check('非同组平台不受去重影响（各自生成单）',
+    Array.isArray(saCOrders) && saCOrders.length === 1, `len=${saCOrders?.length}`);
+
+  await api('DELETE', `/api/platforms/${saIdA}`);
+  await api('DELETE', `/api/platforms/${saIdB}`);
+  await api('DELETE', `/api/platforms/${saC.json.id}`);
+
+  // ===== 11. 收尾：测试数据清零 =====
   const fin = await api('GET', '/api/platforms');
   check('测试平台全部清理', Array.isArray(fin.json) && fin.json.length === 0, `len=${fin.json?.length}`);
 
