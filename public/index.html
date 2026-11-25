@@ -260,14 +260,22 @@
     // 平台名 → 同一账户标注文案（同一个账户余额被多个实例监控时，标明它们是同一个账户）
     // 键是数据库里的 same_account_note 分组键，值是给用户看的说明
     const SAME_ACCOUNT_TEXT = {
-      moonshot: '与「月之暗面」同一账户余额',
-      volcengine: '与「火山引擎」同一账户余额',
+      moonshot: '同一账户余额',
+      volcengine: '同一账户余额',
     };
-    function sameAccountLine(p) {
+    // 文案要列出同组的**其它**实例（不能自己标自己）。
+    // 所以需要整张列表：当前行自己排除掉，再报出同组剩下的平台名。
+    function sameAccountLine(p, list) {
       const key = p && p.same_account_note;
       if (!key) return '';
-      const text = SAME_ACCOUNT_TEXT[key] || ('同一账户余额（分组：' + key + '）');
-      return `<div class="pts-line" title="两个平台查的是同一个账户余额，不会生成重复充值提醒">${esc(text)}</div>`;
+      const others = (list || [])
+        .filter((x) => x.same_account_note === key && x.id !== p.id)
+        .map((x) => x.name);
+      const label = SAME_ACCOUNT_TEXT[key] || '同一账户余额';
+      const text = others.length
+        ? `与「${others.join('」「')}」${label}`
+        : label;
+      return `<div class="pts-line" title="这些平台查的是同一个账户余额，不会生成重复充值提醒">${esc(text)}</div>`;
     }
     // 余额来源：如实告诉用户这个数是从官方接口还是浏览器抓取来的
     function balanceSourceLine(p) {
@@ -732,7 +740,7 @@
         const isLow = p.latest_balance != null && p.latest_balance < (p.threshold ?? 200);
         return `
         <tr${isLow ? ' class="low-balance"' : ''}>
-          <td><span class="pname">${iconFor(p)}<b>${esc(p.name)}</b></span>${sameAccountLine(p)}${isCarrier(p.provider) ? `<div class="sess-box" data-pid="${p.id}"></div>` : ''}</td>
+          <td><span class="pname">${iconFor(p)}<b>${esc(p.name)}</b></span>${sameAccountLine(p, list)}${isCarrier(p.provider) ? `<div class="sess-box" data-pid="${p.id}"></div>` : ''}</td>
           <td>${providerLabel(p)}</td>
           <td id="bal-cell-${p.id}">${balanceBadge(p.latest_balance, p.threshold)} ${esc(p.currency)}${pointsLine(p)}${balanceSourceLine(p)}</td>
           <td>${p.threshold}</td>
