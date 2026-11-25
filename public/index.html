@@ -129,6 +129,7 @@
                 <option value="volcengine">volcengine（火山引擎）</option>
                 <option value="moonshot">moonshot（月之暗面/Kimi）</option>
                 <option value="minimax">minimax（MiniMax）</option>
+                <option value="zhipu">zhipu（智谱 BigModel）</option>
                 <option value="generic">generic（通用）</option>
                 <option value="anyaigc">anyaigc（AnyAIGC）</option>
                 <option value="runninghub">runninghub（RunningHub 国内站）</option>
@@ -308,6 +309,9 @@
       { provider:'scrape', name:'火山引擎', balanceType:'scrape', currency:'CNY', threshold:200,
         url:'https://console.volcengine.com/finance/account-overview', jsonPath:'{"keyword":"可用余额","max":10000000}',
         hint:'浏览器方式：无需 API Key，打开火山引擎费用概览读「账户余额」。首次需运行 <code>node scripts/wallet-login.mjs</code> 登录一次。' },
+      { provider:'zhipu', name:'智谱', balanceType:'scrape', currency:'CNY', threshold:200,
+        url:'https://open.bigmodel.cn/finance-center/finance/overview', jsonPath:'{"keyword":"当前余额","max":10000000}',
+        hint:'浏览器方式：无需 API Key，打开智谱财务总览读「当前余额」。首次需运行 <code>node scripts/wallet-login.mjs</code> 登录一次。' },
       { provider:'yinchao', name:'音潮开放平台', balanceType:'scrape', currency:'CNY', threshold:200,
         url:'https://platform.yinchaoyongxian.com/console/overview', jsonPath:'{"keyword":"当前余额","max":10000000}',
         hint:'浏览器方式：无需 API Key，打开音潮控制台「账户总览」读「当前余额」。首次需运行 <code>node scripts/wallet-login.mjs yinchao</code> 登录一次（手机号+短信验证码）。' },
