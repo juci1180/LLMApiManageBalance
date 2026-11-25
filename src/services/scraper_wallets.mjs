@@ -149,6 +149,12 @@ export const PRECISE_REGEX_BY_KEY = {
   //   "账户总览\n当前余额\n¥\n2.20\nCNY\n去充值…" —— ¥ 与数字分段渲染也能命中；
   // 页面其余「余额」字样（余额使用说明/充值明细）后不接金额，天然不中
   yinchao: '当前余额[^\\d¥￥]{0,12}?[¥￥]\\s*(-?\\d[\\d,]*(?:\\.[0-9]+)?)',
+  // 智谱开放平台（实测 2026-11-25，finance-center/finance/overview 页归一化后文本）：
+  //   "…财务总览\n当前余额\n余额预警未开启\n设置\n充值明细\n0.00\n元\n现金余额\n0.00\n元…"
+  // 标签与金额之间隔着「余额预警未开启/设置/充值明细」等中文文字，非贪婪间隙放宽到 80 字；
+  // 间隙不含数字，取标签后第一个数字（即大字金额）；页面其余「余额」字样（现金余额/赠金余额/
+  // 冻结金额）不匹配「当前余额」前缀，天然不中
+  zhipu: '当前余额[^\\d]{0,80}?(-?\\d[\\d,]*(?:\\.[0-9]+)?)',
 };
 
 // 三大运营商网厅入口（登录后靠 CARRIER_RULES.entries 点菜单进入余额页）
@@ -640,8 +646,20 @@ async function scrapeOnePage(page, { url, rule, debugLabel = '平台', waitMs = 
   }
 
 
-  const text = normalizePageText(await page.evaluate(() => (document.body ? document.body.innerText : '')));
-  const balance = extractBalance(text, rule);
+  let text = normalizePageText(await page.evaluate(() => (document.body ? document.body.innerText : '')));
+  let balance = extractBalance(text, rule);
+  if (balance === null) {
+    // SPA 页面金额可能异步加载：标签先渲染、金额数值后到（无头快照可能恰好落在
+    // 标签已出现、金额未返回的窗口）。标签已命中但提不到金额时，轮询重试提取
+    // （最多再等 16 秒），金额到位即成功；会话失效/结构变化的情形重试耗尽后
+    // 仍走下方统一报错。
+    for (let i = 0; i < 8 && balance === null; i++) {
+      await page.waitForTimeout(2000);
+      const t2 = normalizePageText(await page.evaluate(() => (document.body ? document.body.innerText : '')));
+      const b2 = extractBalance(t2, rule);
+      if (b2 !== null) { text = t2; balance = b2; }
+    }
+  }
   if (balance === null) {
     // 提取不到余额时，先分清「会话已失效」与「页面结构变了」——
     // 实测（2026-11-20）：电信会话作废后，首页仍带「账户余额」标签但值是 "--"，
