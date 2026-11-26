@@ -330,6 +330,14 @@ export async function registerRoutes(fastify) {
       );
       return { id: info.lastInsertRowid };
     } catch (err) {
+      // 同名平台：平台名有唯一约束。快速添加已存在同名模板时会走到这里，
+      // 原始 SQLite 报错（UNIQUE constraint failed: platforms.name）对用户无意义，
+      // 改成可读提示并告诉用户去编辑已有实例。
+      if (String(err.message || '').includes('UNIQUE constraint failed')) {
+        return reply.code(409).send({
+          error: `已存在同名平台「${b.name}」。请在列表里找到它点「编辑」修改，而不是新建。`,
+        });
+      }
       return reply.code(400).send({ error: err.message });
     }
   });

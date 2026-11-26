@@ -49,7 +49,7 @@ const API_TARGETS = [
     name: '腾讯云',
     provider: 'tencent',
     api_url: 'https://billing.tencentcloudapi.com',
-    api_json_path: 'Response.RealBalance',
+    api_json_path: 'Response.Balance',
   },
   {
     name: '阿里云',

@@ -310,7 +310,29 @@ try {
   await api('DELETE', `/api/platforms/${saIdB}`);
   await api('DELETE', `/api/platforms/${saC.json.id}`);
 
-  // ===== 11. 收尾：测试数据清零 =====
+  // ===== 11. 同名平台冲突（快速添加模板重复点时会发生）=====
+  // 平台名有唯一约束。快速添加栏里已存在同名模板时，用户会直接撞上。
+  // 原始 SQLite 报错（UNIQUE constraint failed: platforms.name）对用户无意义，
+  // 接口必须返回可读提示并告诉用户去编辑已有实例。
+  const dupName = '快速添加重复测试';
+  const dup1 = await api('POST', '/api/platforms', {
+    name: dupName, provider: 'generic', balance_type: 'manual',
+    currency: 'CNY', threshold: 200, recharge_amount: 500,
+  });
+  check('创建同名平台', dup1.ok && Number.isFinite(dup1.json?.id), `id=${dup1.json?.id}`);
+  const dup2 = await api('POST', '/api/platforms', {
+    name: dupName, provider: 'generic', balance_type: 'manual',
+    currency: 'CNY', threshold: 200, recharge_amount: 500,
+  });
+  check('重复创建同名平台被拒绝', dup2.status === 409, `status=${dup2.status}`);
+  check('同名冲突的错误提示可读（不是 SQLite 原文）',
+    typeof dup2.json?.error === 'string'
+    && dup2.json.error.includes(dupName)
+    && !dup2.json.error.includes('UNIQUE constraint'),
+    String(dup2.json?.error || '').slice(0, 80));
+  await api('DELETE', `/api/platforms/${dup1.json.id}`);
+
+  // ===== 12. 收尾：测试数据清零 =====
   const fin = await api('GET', '/api/platforms');
   check('测试平台全部清理', Array.isArray(fin.json) && fin.json.length === 0, `len=${fin.json?.length}`);
 
