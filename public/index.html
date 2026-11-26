@@ -119,11 +119,12 @@
           <div id="scrape-hint" class="hidden" style="background:#fef9c3; border:1px solid #fde68a; border-radius:6px; padding:10px 14px; font-size:13px; color:#854d0e; margin-bottom:12px; line-height:1.7;">🔑 浏览器抓取型无需 API Key。首次使用需先登录一次：双击项目目录的 <b>重新登录.bat</b>（或执行 <code>node scripts/wallet-login.mjs</code>），脚本会自动列出所有「浏览器抓取型」平台逐个登录（新添加的平台也会自动包含）。登录成功后保存平台，之后定时巡检自动抓取余额。<br>⚠️ 余额查询 URL 请填写该平台的钱包余额页面网址（余额显示在哪一页就填哪一页），抓取关键词对应页面上余额旁边的文字。<br>💡 <b>api_scrape</b> 模式 = 先用官方接口查（更准、不会弹窗、不依赖登录态），官方接口查不到再回退到浏览器抓取。选这个模式时：API Key 必填（否则直接走抓取）；「余额查询 URL」填控制台页面地址（兜底抓取用）；「官方接口 URL / JSON path」留空则用该 provider 的内置官方接口。</div>
           <div class="grid" id="form-grid">
             <div class="field" data-field="name"><label>平台名称 *</label><input id="f-name" placeholder="如 OpenAI"></div>
-            <div class="field" data-field="provider"><label>Provider</label>
+            <div class="field" data-field="provider" data-zone="more"><label>Provider</label>
               <select id="f-provider">
                 <option value="openai">openai</option>
                 <option value="anthropic">anthropic</option>
                 <option value="google">google</option>
+                <option value="deepseek">deepseek（DeepSeek）</option>
                 <option value="tencent">tencent（腾讯云/混元）</option>
                 <option value="dashscope">dashscope（阿里云百炼）</option>
                 <option value="volcengine">volcengine（火山引擎）</option>
@@ -142,7 +143,7 @@
             </div>
             <div class="field" data-field="key"><label id="f-key-label">API Key <a href="https://platform.deepseek.com/api_keys" target="_blank" rel="noopener noreferrer" style="font-size:12px;color:var(--brand);margin-left:4px;">查看帮助</a></label><input id="f-key" placeholder="sk-"></div>
             <div class="field" data-field="key-secret"><label id="f-key-secret-label">Secret Key（火山 SK，可选）</label><input id="f-key-secret" placeholder="火山引擎填 Secret Access Key"></div>
-            <div class="field" data-field="balance-type"><label>余额类型</label>
+            <div class="field" data-field="balance-type" data-zone="more"><label>余额类型</label>
               <select id="f-balance-type" onchange="onBalanceTypeChange()">
                 <option value="api">api（官方接口，填 API Key）</option>
                 <option value="api_scrape">api_scrape（官方接口优先，失败回退浏览器抓取）</option>
@@ -150,15 +151,16 @@
                 <option value="manual">manual（手动录入）</option>
               </select>
             </div>
-            <div class="field" data-field="balance-url"><label>余额查询 URL</label><input id="f-balance-url" placeholder="https://..."></div>
-            <div class="field" data-field="json-path"><label>余额 JSON path</label><input id="f-json-path" placeholder="如 total_available"></div>
-            <div class="field" data-field="api-url"><label>官方接口 URL（api_scrape 模式，可选）</label><input id="f-api-url" placeholder="留空则用该 provider 的内置官方接口"></div>
-            <div class="field" data-field="api-json-path"><label>官方接口 JSON path（api_scrape 模式，可选）</label><input id="f-api-json-path" placeholder="如 data.available_balance"></div>
-            <div class="field" data-field="currency"><label>币种</label><input id="f-currency" value="USD"></div>
-            <div class="field" data-field="threshold"><label>充值阈值</label><input id="f-threshold" type="number" value="200"></div>
-            <div class="field" data-field="recharge"><label>充值金额</label><input id="f-recharge" type="number" value="500"></div>
-            <div class="field" data-field="target"><label>补足目标（可选）</label><input id="f-target" type="number" placeholder="留空=固定金额"></div>
+            <div class="field" data-field="balance-url" data-zone="more"><label>余额查询 URL</label><input id="f-balance-url" placeholder="https://..."></div>
+            <div class="field" data-field="json-path" data-zone="more"><label>余额 JSON path</label><input id="f-json-path" placeholder="如 total_available"></div>
+            <div class="field" data-field="api-url" data-zone="more"><label>官方接口 URL（api_scrape 模式，可选）</label><input id="f-api-url" placeholder="留空则用该 provider 的内置官方接口"></div>
+            <div class="field" data-field="api-json-path" data-zone="more"><label>官方接口 JSON path（api_scrape 模式，可选）</label><input id="f-api-json-path" placeholder="如 data.available_balance"></div>
+            <div class="field" data-field="currency" data-zone="more"><label>币种</label><input id="f-currency" value="USD"></div>
+            <div class="field" data-field="threshold" data-zone="more"><label>充值阈值</label><input id="f-threshold" type="number" value="200"></div>
+            <div class="field" data-field="recharge" data-zone="more"><label>充值金额</label><input id="f-recharge" type="number" value="500"></div>
+            <div class="field" data-field="target" data-zone="more"><label>补足目标（可选）</label><input id="f-target" type="number" placeholder="留空=固定金额"></div>
           </div>
+          <button type="button" id="more-toggle" onclick="toggleMoreZone()" style="margin-top:10px;font-size:13px;color:var(--muted);background:none;border:1px dashed var(--border);border-radius:6px;padding:6px 14px;cursor:pointer;">▸ 展开其他设置（币种 / 阈值 / 接口地址…）</button>
           <button class="primary" id="form-save-btn" onclick="savePlatform()">保存</button>
           <button onclick="hideAddForm()">取消</button>
         </div>
@@ -425,10 +427,42 @@
       carrier_ct:  { hide:['key','key-secret','balance-url','json-path'], keyLabel:'无需 API Key（网厅登录抓取）', secretLabel:'无需 Secret Key' },
       carrier_cu:  { hide:['key','key-secret','balance-url','json-path'], keyLabel:'无需 API Key（网厅登录抓取）', secretLabel:'无需 Secret Key' },
     };
-    function setFieldVisible(name, visible) {
+    // ===== 表单分区：必填区 + 「其他设置」折叠区 =====
+    //
+    // HTML 里 data-zone="more" 的字段属于折叠区（币种/阈值/充值金额/各类 URL/path，
+    // 以及裸表单才需要的 Provider/余额类型）。默认收起，点「展开其他设置」才显示。
+    // 折叠 ≠ 丢弃：字段值始终保留（display:none 不清 value），保存时照常提交，后端零改动。
+    // 三层可见性叠加，setFieldVisible 是唯一出口：
+    //   1. baseVisibility —— 按平台/余额类型的适用性（FIELD_VISIBILITY + onBalanceTypeChange）
+    //   2. moreOpen —— 折叠区是否展开（收起时 zone=more 一律隐藏，钉住的除外）
+    //   3. lockedFields —— 模板锁定的字段（Provider/余额类型由模板定死，永远不出现）
+    //      pinnedFields —— 裸表单钉在必填区的字段（没模板锁定时这两项必须选）
+    const baseVisibility = {};
+    let moreOpen = false;
+    const lockedFields = new Set();
+    const pinnedFields = new Set();
+    function applyFieldState(name) {
       const el = document.querySelector(`#form-grid [data-field="${name}"]`);
-      if (el) el.classList.toggle('hidden', !visible);
+      if (!el) return;
+      const inMore = el.dataset.zone === 'more';
+      const collapsedAway = inMore && !moreOpen && !pinnedFields.has(name);
+      el.classList.toggle('hidden', baseVisibility[name] === false || collapsedAway || lockedFields.has(name));
     }
+    function setFieldVisible(name, visible) {
+      baseVisibility[name] = visible;
+      applyFieldState(name);
+    }
+    const MORE_ZONE_LABEL_CLOSED = '▸ 展开其他设置（币种 / 阈值 / 接口地址…）';
+    const MORE_ZONE_LABEL_OPEN = '▾ 收起其他设置';
+    function setMoreOpen(open) {
+      moreOpen = open;
+      const btn = document.querySelector('#more-toggle');
+      if (btn) btn.textContent = open ? MORE_ZONE_LABEL_OPEN : MORE_ZONE_LABEL_CLOSED;
+      for (const el of document.querySelectorAll('#form-grid [data-zone="more"]')) {
+        applyFieldState(el.dataset.field);
+      }
+    }
+    function toggleMoreZone() { setMoreOpen(!moreOpen); }
     function applyFieldVisibility(provider) {
       const cfg = FIELD_VISIBILITY[provider];
       for (const name of ['key','key-secret','balance-type','balance-url','json-path','api-url','api-json-path']) {
@@ -567,6 +601,10 @@
       document.querySelector('#f-target').value = '';
       applyFieldVisibility(t.provider);
       onBalanceTypeChange();
+      // 模板锁定：Provider/余额类型由模板定死（值已预填，保存照常提交），表单里不出现
+      pinnedFields.delete('provider'); pinnedFields.delete('balance-type');
+      lockedFields.add('provider'); lockedFields.add('balance-type');
+      applyFieldState('provider'); applyFieldState('balance-type');
       const hint = document.querySelector('#form-hint');
       hint.innerHTML = 'ℹ️ ' + t.hint;
       hint.classList.remove('hidden');
@@ -1063,6 +1101,11 @@
     function showAddForm(){
       editingId = null;
       pendingSameAccount = null;
+      lockedFields.clear();
+      pinnedFields.clear();
+      pinnedFields.add('provider'); pinnedFields.add('balance-type'); // 裸表单没有模板锁定，这两项必须选，钉在必填区
+      setMoreOpen(false);
+      applyFieldState('provider'); // 模板表单会隐藏 Provider，这里恢复显示
       document.querySelector('#form-title').textContent = '添加平台';
       document.querySelector('#form-hint').classList.add('hidden');
       // 先重置所有字段为默认值，再计算字段可见性（避免残留上次模板的状态）
@@ -1085,7 +1128,11 @@
       onBalanceTypeChange();
       document.querySelector('#add-form').classList.remove('hidden');
     }
-    function hideAddForm(){ document.querySelector('#add-form').classList.add('hidden'); }
+    function hideAddForm(){
+      lockedFields.clear(); pinnedFields.clear();
+      setMoreOpen(false);
+      document.querySelector('#add-form').classList.add('hidden');
+    }
 
     let editingId = null;
     async function editPlatform(id) {
@@ -1093,6 +1140,9 @@
       editingId = id;
       // 编辑时不带分组键：避免把已有的 same_account_note 清空
       pendingSameAccount = null;
+      lockedFields.clear(); pinnedFields.clear(); // 编辑表单：Provider/余额类型进折叠区，改阈值/币种先展开
+      setMoreOpen(false);
+      applyFieldState('provider');
       document.querySelector('#form-title').textContent = `编辑平台 #${id}`;
       document.querySelector('#form-hint').classList.add('hidden'); // 编辑时不显示快速添加模板提示
       document.querySelector('#f-name').value = p.name || '';
