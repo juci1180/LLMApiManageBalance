@@ -394,7 +394,9 @@
         if (t.balanceType === 'api_scrape') {
           btn.innerHTML += '<span class="badge info" style="padding:0 6px;font-size:10px;">接口优先</span>';
         }
-        btn.onclick = () => showQuickForm(t);
+        // 抓取型模板一键创建：所有字段模板已定死，见 quickCreateScrape；
+        // API 接口型仍走预填表单（需要用户填密钥，且同名要转编辑防重复）
+        btn.onclick = () => ((t.group === 'scrape' || t.balanceType === 'scrape') ? quickCreateScrape(t) : showQuickForm(t));
         // 分组：运营商虽然 balance_type=api（靠 provider 走专用查询器），
         // 但用户无需填 API Key、需先登录网厅，语义上属“浏览器抓取型”，放第二组
         const bar = ((t.group || (t.balanceType === 'scrape')) ? scrapeBar : apiBar);
@@ -485,6 +487,56 @@
       const sameProvider = list.filter((p) => p.provider === t.provider);
       if (sameProvider.length === 1) return sameProvider[0];
       return null;
+    }
+
+    // 抓取型模板一键创建：表格里每个字段都由模板定死（运营商连密钥栏都隐藏），
+    // 再让用户过一遍表单只是多余步骤——点击直接按模板值建实例，成功后引导登录。
+    // 重名时弹一次确认，默认名自动加序号（中国移动话费 → 中国移动话费2），
+    // 覆盖同一运营商多账户（主卡/副卡）场景，全程零打字。
+    // API 接口型模板不走这里：它们需要用户填密钥，且同名应转编辑防重复（见 showQuickForm）。
+    async function quickCreateScrape(t) {
+      const list = platformsCache || [];
+      let name = t.name;
+      if (list.some((p) => p.name === name)) {
+        // 已有同名实例：算出下一个可用序号名，确认后创建（第二个账户）
+        let n = 2;
+        while (list.some((p) => p.name === `${t.name}${n}`)) n++;
+        const nextName = `${t.name}${n}`;
+        const msg = `已存在「${t.name}」。要再建一个新实例吗？\n\n新实例名称：${nextName}\n（同一运营商的第二个账户，如副卡；登录态按实例独立保存，互不影响）`;
+        if (!confirm(msg)) return;
+        name = nextName;
+      }
+      const body = {
+        name, provider: t.provider,
+        balance_type: t.balanceType || 'api',
+        balance_api_url: t.url || '',
+        balance_json_path: t.jsonPath || '',
+        api_url: t.apiUrl || '',
+        api_json_path: t.apiJsonPath || '',
+        currency: t.currency, threshold: t.threshold,
+        recharge_amount: t.rechargeAmount ?? 500,
+        target_amount: null,
+      };
+      if (t.sameAccount) body.same_account_note = t.sameAccount;
+      let created;
+      try {
+        created = await api('/api/platforms', { method:'POST', body });
+      } catch (e) {
+        alert(`创建失败：${e.message}`);
+        return;
+      }
+      loadPlatforms();
+      // 创建成功即引导登录；取消则稍后双击 重新登录.bat 也可以
+      try {
+        const state = await api(`/api/platforms/${created.id}/login-state`);
+        if (state && !state.exists) {
+          const carrier = isCarrier(t.provider);
+          const msg = carrier
+            ? `已创建「${name}」（#${created.id}）。运营商网厅需要登录一次才能查话费余额（需服务密码或短信验证码）。\n\n现在打开登录窗口吗？（取消则稍后双击 重新登录.bat）`
+            : `已创建「${name}」（#${created.id}）。浏览器抓取需要登录一次才能抓取余额。\n\n现在打开登录窗口吗？（取消则稍后双击 重新登录.bat）`;
+          if (confirm(msg)) openLogin(created.id);
+        }
+      } catch (_) { /* 登录态检测失败不影响创建结果 */ }
     }
 
     function showQuickForm(t) {

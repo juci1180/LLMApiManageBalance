@@ -332,6 +332,26 @@ try {
     String(dup2.json?.error || '').slice(0, 80));
   await api('DELETE', `/api/platforms/${dup1.json.id}`);
 
+  // ===== 11b. 抓取型一键创建（无密钥 + 重名加序号）=====
+  // 前端点抓取型模板直接按模板值建实例，不带任何密钥字段；
+  // 重名时前端自动生成「xx2」再建（同一运营商第二个账户，副卡场景）。
+  // 这里验证后端接受这两种请求体，且两个同 provider 实例可以并存。
+  const ocName = '一键创建冒烟抓取型';
+  const ocBody = (n) => ({
+    name: n, provider: 'yinchao', balance_type: 'scrape',
+    balance_api_url: 'https://platform.yinchaoyongxian.com/console/overview',
+    balance_json_path: '{"keyword":"当前余额","max":10000000}',
+    currency: 'CNY', threshold: 200, recharge_amount: 500,
+  });
+  const oc1 = await api('POST', '/api/platforms', ocBody(ocName));
+  check('抓取型一键创建（无密钥字段）', oc1.ok && Number.isFinite(oc1.json?.id), `id=${oc1.json?.id}`);
+  const oc2 = await api('POST', '/api/platforms', ocBody(`${ocName}2`));
+  check('重名加序号可创建第二个实例（副卡场景）', oc2.ok && Number.isFinite(oc2.json?.id), `id=${oc2.json?.id}`);
+  const ocList = (await api('GET', '/api/platforms')).json?.filter((p) => p.provider === 'yinchao');
+  check('两个抓取型实例并存', ocList?.length === 2, `len=${ocList?.length}`);
+  await api('DELETE', `/api/platforms/${oc1.json.id}`);
+  await api('DELETE', `/api/platforms/${oc2.json.id}`);
+
   // ===== 12. 收尾：测试数据清零 =====
   const fin = await api('GET', '/api/platforms');
   check('测试平台全部清理', Array.isArray(fin.json) && fin.json.length === 0, `len=${fin.json?.length}`);
