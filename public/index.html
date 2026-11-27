@@ -10,7 +10,7 @@
     body { font-family:-apple-system,BlinkMacSystemFont,"Segoe UI","PingFang SC","Microsoft YaHei",sans-serif; background:var(--bg); color:var(--text); font-size:14px; }
     header { background:var(--card); border-bottom:1px solid var(--border); padding:16px 24px; display:flex; align-items:center; justify-content:space-between; }
     header h1 { font-size:18px; }
-    .container { max-width:1200px; margin:24px auto; padding:0 24px; }
+    .container { width:80%; max-width:1600px; margin:24px auto; padding:0 24px; }
     .tabs { display:flex; gap:8px; margin-bottom:20px; }
     .tab { padding:8px 16px; background:var(--card); border:1px solid var(--border); border-radius:8px; cursor:pointer; color:var(--muted); }
     .tab.active { background:var(--brand); color:#fff; border-color:var(--brand); }
@@ -28,8 +28,78 @@
     .badge.warn { background:#fffbeb; color:var(--amber); }
     .badge.err { background:#fef2f2; color:var(--red); }
     .badge.info { background:#eff6ff; color:var(--brand); }
-    @keyframes alertPulse { 0%,100% { background:#fef2f2; } 50% { background:#fee2e2; } }
-    .alert-bar { background:#fef2f2; border:1px solid #fecaca; border-radius:8px; padding:10px 14px; margin-top:12px; font-size:14px; color:#991b1b; line-height:1.8; animation: alertPulse 2s infinite; }
+    /* 页头消息中心：铃铛 + 计数徽标 + 下拉面板（余额预警红色样式，普通消息默认样式，每条带时间） */
+    .msg-wrap { position:relative; }
+    .msg-btn { position:relative; border:none; background:none; font-size:17px; line-height:1; padding:5px 8px; border-radius:8px; cursor:pointer; }
+    .msg-btn:hover { background:#f1f5f9; }
+    .msg-count { position:absolute; top:0; right:0; min-width:16px; height:16px; padding:0 4px; border-radius:999px; background:#ef4444; color:#fff; font-size:10px; line-height:16px; text-align:center; font-weight:600; }
+    .msg-panel { position:absolute; top:calc(100% + 6px); right:0; width:400px; max-height:440px; overflow:auto; background:#fff; border:1px solid #e2e8f0; border-radius:10px; box-shadow:0 8px 24px rgba(15,23,42,.14); padding:6px 12px; z-index:60; }
+    .msg-row { display:flex; align-items:flex-start; gap:8px; padding:8px 0; border-top:1px dashed #e2e8f0; font-size:13px; line-height:1.5; }
+    .msg-row:first-child { border-top:none; }
+    .msg-tag { flex:0 0 auto; font-size:11px; padding:1px 8px; border-radius:999px; margin-top:1px; white-space:nowrap; }
+    .msg-tag.msg-alert { background:#fef2f2; color:#991b1b; border:1px solid #fecaca; }
+    .msg-tag.msg-normal { background:#eff6ff; color:#1d4ed8; border:1px solid #bfdbfe; }
+    .msg-body { flex:1; min-width:0; color:#334155; }
+    .msg-row.is-alert .msg-body { color:#991b1b; }
+    .msg-time { flex:0 0 auto; font-size:11px; color:#94a3b8; margin-top:2px; white-space:nowrap; }
+    .msg-foot { display:flex; justify-content:flex-end; gap:8px; padding-top:8px; margin-top:4px; border-top:1px solid #e2e8f0; }
+    .msg-empty { padding:18px 0; text-align:center; color:#94a3b8; font-size:13px; }
+    /* 行内编辑：行内输入框与实例名称小字（同一平台多实例的「名称」） */
+    .ie-stack { display:flex; flex-direction:column; gap:6px; }
+    /* 宽度不写在 CSS 里：进入编辑前实测各列宽度，行内样式钉死（见 startInlineEdit），
+       编辑行对列宽的贡献与普通态完全一致——表格不膨胀（2026-11-27 用户要求） */
+    .ie-input { padding:5px 6px; border:1px solid var(--brand); border-radius:6px; font-size:13px; }
+    .ie-num { padding:5px 4px; border:1px solid var(--brand); border-radius:6px; font-size:13px; appearance:textfield; -moz-appearance:textfield; }
+    .ie-num::-webkit-outer-spin-button, .ie-num::-webkit-inner-spin-button { -webkit-appearance:none; margin:0; }
+    /* 编辑控件绝对定位于单元格内：脱离文档流、不参与列宽/行高计算，表格几何零变化 */
+    .ie-cell { position:relative; }
+    .ie-abs { position:absolute; margin:0; }
+    tr.inline-editing td { background:#eff6ff; }
+    .inst-line { font-size:11px; color:var(--muted); margin-top:2px; }
+    /* 首列两行制（图1）：大字=实例「名称」（label 优先，留空用平台名），小字行=logo+平台名+类型徽章 */
+    .inst-name { font-size:15px; font-weight:700; color:#0f172a; line-height:1.35; }
+    .inst-sub { margin-top:3px; font-size:12px; color:#475569; display:flex; align-items:center; gap:6px; }
+    .inst-sub .picon { margin-right:0; }
+    /* 类型徽章：API=官方接口型（琥珀棕），SCRAPE=浏览器抓取型（石板灰蓝），手动=手动录入（灰） */
+    .type-badge { display:inline-flex; align-items:center; padding:0 7px; height:17px; border-radius:9px; font-size:10px; font-weight:600; letter-spacing:0.5px; color:#fff; flex-shrink:0; }
+    .t-api { background:#b45309; }
+    .t-scrape { background:#475569; }
+    .t-manual { background:#94a3b8; }
+    /* 窄视口防挤压：表头/徽章/按钮不换行、表格保最小宽度（≥9 列最小内容宽之和≈1140），超出容器时卡内横向滚动 */
+    #platform-table { min-width:1160px; }
+    #platform-table th { white-space:nowrap; }
+    #platform-table .badge, #platform-table button, .type-badge { white-space:nowrap; }
+    /* 平台健康度摘要条（第一层检测）：非阻塞横幅，全绿 3 秒淡出，异常常驻可展开明细 */
+    /* 页头平台健康组件：常驻徽标 + 逐平台下拉面板 + 全量/单项重测（配色沿用三态语义） */
+    .health-ok { background:#f0fdf4; border-color:#bbf7d0; color:#166534; }
+    .health-warn { background:#fffbeb; border-color:#fde68a; color:#92400e; }
+    .health-bad { background:#fef2f2; border-color:#fecaca; color:#991b1b; }
+    .hdr-right { display:flex; align-items:center; gap:10px; }
+    .hdr-health { position:relative; }
+    .hdr-badge { display:flex; align-items:center; gap:6px; border:1px solid #e2e8f0; border-radius:8px; padding:7px 12px; font-size:13px; cursor:pointer; user-select:none; }
+    .hdr-badge:hover { background:#f8fafc; }
+    .hdr-badge b { font-weight:600; }
+    .hdr-badge .arrow { font-size:10px; transition:transform .2s; }
+    .hdr-badge.open .arrow { transform:rotate(180deg); }
+    .hdr-refresh { border:none; background:none; font-size:16px; line-height:1; padding:4px 6px; border-radius:6px; cursor:pointer; color:#475569; }
+    .hdr-refresh:hover { background:#f1f5f9; }
+    .hdr-refresh.loading { animation:hdrSpin 1s linear infinite; pointer-events:none; }
+    @keyframes hdrSpin { to { transform:rotate(360deg); } }
+    .hdr-panel { position:absolute; top:calc(100% + 6px); right:0; width:360px; max-height:420px; overflow:auto; background:#fff; border:1px solid #e2e8f0; border-radius:10px; box-shadow:0 8px 24px rgba(15,23,42,.14); padding:6px 12px; z-index:60; }
+    .hdr-row { display:flex; align-items:center; gap:8px; padding:7px 0; border-top:1px dashed #e2e8f0; font-size:13px; color:#334155; }
+    .hdr-row:first-child { border-top:none; }
+    .hdr-name { flex:0 0 132px; display:flex; align-items:center; gap:6px; min-width:0; font-weight:600; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+    .hdr-why { flex:1; min-width:0; color:#64748b; font-size:12px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+    .hdr-dot { width:8px; height:8px; border-radius:50%; flex:0 0 auto; }
+    .hdr-dot.ok { background:#22c55e; }
+    .hdr-dot.warn { background:#f59e0b; }
+    .hdr-dot.bad { background:#ef4444; }
+    .hdr-check { flex:0 0 auto; font-size:12px; padding:2px 8px; border:1px solid #e2e8f0; background:#fff; border-radius:6px; cursor:pointer; color:#475569; }
+    .hdr-check:hover { background:#f1f5f9; }
+    .hdr-check.loading { opacity:.6; pointer-events:none; }
+    .hdr-foot { display:flex; justify-content:space-between; align-items:center; padding-top:8px; margin-top:4px; border-top:1px solid #e2e8f0; font-size:12px; color:#94a3b8; }
+    .hd-btn { font-size:12px; padding:3px 12px; border-radius:6px; border:1px solid #cbd5e1; background:#fff; color:#334155; cursor:pointer; white-space:nowrap; }
+    .hd-btn:hover { background:#f1f5f9; }
     tr.low-balance td { background:#fef2f2 !important; }
     .grid { display:grid; grid-template-columns:1fr 1fr; gap:20px; }
     input, select { padding:8px 10px; border:1px solid var(--border); border-radius:6px; width:100%; }
@@ -37,7 +107,18 @@
     .field label { display:block; font-size:12px; color:var(--muted); margin-bottom:4px; }
     .stat { font-size:28px; font-weight:700; }
     .muted { color:var(--muted); }
-    .row-actions { display:flex; gap:6px; }
+    /* 操作列：td 保持 table-cell（display:flex 会覆盖它导致列宽不参与表格分配，
+       5 按钮行被挤压竖排），flex 容器包在 td 内部的 .btns 上 */
+    .row-actions { white-space:nowrap; }
+    .row-actions .btns { display:flex; gap:6px; align-items:center; }
+    .row-actions button { white-space:nowrap; }
+    /* 操作列按钮内边距紧凑化（2026-11-27）：登录/刷新常驻「登录中」/「刷新中」占位宽后，
+       四按钮总宽仍不超旧布局（62×2+48×2+间隙 < 旧 57×4+间隙），保证表格不溢出、按钮全部可见。 */
+    #platform-table .btns button { padding:6px 9px; }
+    /* 操作列最小宽度 = 常驻占位后的四按钮总宽（62+62+48+48+间隙18+单元格内边距24）。
+       数据变宽时（如余额 230.50159、积分双行）表格自动布局会把操作列压瘪，
+       压瘪后刷新/编辑/删除溢出卡片右缘被裁掉（2026-11-27 实测），显式 min-width 兕底。 */
+    #platform-table td.row-actions { min-width:262px; }
     .status-pending { color:var(--amber); }
     .status-notified { color:var(--brand); }
     .status-paid { color:#7c3aed; }
@@ -63,6 +144,17 @@
     .lq-none { color:#9ca3af; }
     /* 操作反馈：右上角 toast */
     .toast-wrap { position:fixed; top:16px; right:16px; z-index:999; display:flex; flex-direction:column; gap:8px; pointer-events:none; }
+    /* 添加/编辑平台 → 第一层弹出浮层（2026-11-27）：全屏遮罩 + 居中卡片。
+       层级 200：盖过消息/健康下拉面板(60)，toast(999) 仍在浮层之上。
+       .modal-mask.hidden 双类规则：.hidden 与 .modal-mask 同特异性（单类），
+       display 由样式表顺序决定——显式声明，避免顺序耦合导致浮层关不上。 */
+    .modal-mask { position:fixed; inset:0; background:rgba(15,23,42,.45); z-index:200; display:flex; align-items:flex-start; justify-content:center; padding:6vh 16px 16px; overflow-y:auto; }
+    .modal-mask.hidden { display:none; }
+    .modal-card { width:100%; max-width:560px; max-height:85vh; overflow-y:auto; margin:0; position:relative; animation:modalIn .15s ease-out; }
+    .modal-close { position:absolute; top:10px; right:12px; width:28px; height:28px; border:none; background:none; font-size:20px; line-height:1; color:var(--muted); cursor:pointer; border-radius:6px; padding:0; }
+    .modal-close:hover { background:#f1f5f9; color:#0f172a; }
+    @keyframes modalIn { from { opacity:0; transform:translateY(10px); } to { opacity:1; transform:none; } }
+    @media (prefers-reduced-motion: reduce) { .modal-card { animation:none; } }
     .toast { pointer-events:auto; max-width:380px; padding:10px 14px; border-radius:8px; font-size:13px; line-height:1.6; box-shadow:0 4px 14px rgba(0,0,0,.14); background:#fff; border:1px solid var(--border); animation:toastIn .18s ease-out; word-break:break-word; }
     .toast.ok { background:#ecfdf5; border-color:#a7f3d0; color:#065f46; }
     .toast.err { background:#fef2f2; border-color:#fecaca; color:#991b1b; }
@@ -73,12 +165,53 @@
     @keyframes cellFlash { 0% { background:#dcfce7; } 100% { background:transparent; } }
     .cell-flash { animation: cellFlash 1.4s ease-out; }
     button.loading { opacity:.7; cursor:progress; }
+    /* 行内「登录/刷新」按钮按加载态文案常驻占位（2026-11-27）：高度 0 的隐藏块级伪元素参与
+       按钮 max-content 计算 = max(占位宽, 文字宽)；占位与加载文案逐字相同，故「登录↔登录中」
+       「刷新↔刷新中」切换时按钮宽度严格相等，页面不再跳动。改 openLogin/refreshOne 的加载
+       文案时必须同步这里的 content。 */
+    #platform-table .btns button[id^="login-btn-"]::before {
+      content: '登录中';
+      display: block;
+      height: 0;
+      visibility: hidden;
+      overflow: hidden;
+    }
+    #platform-table .btns button[id^="refresh-btn-"]::before {
+      content: '刷新中';
+      display: block;
+      height: 0;
+      visibility: hidden;
+      overflow: hidden;
+    }
+    /* 编辑态「保存」按钮按「刷新中」宽度占位：与隐藏登录占位（文字「登录中」）共同保证
+       编辑态四槽总宽 = 普通行四槽总宽，「更多」右缘对齐「删除」右缘不因占位而破坏。 */
+    #platform-table .btns button.res-wide::before {
+      content: '刷新中';
+      display: block;
+      height: 0;
+      visibility: hidden;
+      overflow: hidden;
+    }
   </style>
 </head>
 <body>
   <header>
     <h1>大模型 API 统一管理平台</h1>
-    <div id="fund-badge" class="muted">累计充值：--</div>
+    <div class="hdr-right">
+      <div class="msg-wrap">
+        <button id="msg-btn" class="msg-btn" title="消息中心：余额预警与提醒（点击开合）" onclick="toggleMsgPanel(event)">🔔<span id="msg-count" class="msg-count hidden"></span></button>
+        <div id="msg-panel" class="msg-panel hidden" onclick="event.stopPropagation()"></div>
+      </div>
+      <div class="hdr-health">
+        <div id="health-badge" class="hdr-badge" onclick="toggleHealthPanel(event)" title="平台健康度：点击查看各平台明细">
+          <span id="health-badge-text"><b>🔎 平台健康检测中…</b></span>
+          <span class="arrow">▾</span>
+        </div>
+        <div id="health-panel" class="hdr-panel hidden" onclick="event.stopPropagation()"></div>
+      </div>
+      <button id="health-refresh-btn" class="hdr-refresh" title="重新检测平台健康度（重拉数据后重算，零弹窗）" onclick="healthRefreshAll(event)">⟳</button>
+      <div id="fund-badge" class="muted">累计充值：--</div>
+    </div>
   </header>
 
   <div class="container">
@@ -96,7 +229,6 @@
           <button id="login-all-btn" onclick="openLoginAll()" style="display:none; background:#7c3aed; color:#fff; border:none; border-radius:6px; padding:6px 12px; cursor:pointer; font-size:13px;">🔑 全部一键登录</button>
           <button id="relogin-stagger-btn" onclick="openStaggeredRelogin()" style="display:none; background:#ea580c; color:#fff; border:none; border-radius:6px; padding:6px 12px; cursor:pointer; font-size:13px; margin-left:8px;">🕐 按顺序重登</button>
         </div>
-        <div id="alert-bar" class="alert-bar hidden"></div>
         <div id="push-notice" class="hidden" style="background:#fff7ed; border:1px solid #fed7aa; border-radius:8px; padding:8px 14px; margin-top:12px; font-size:13px; color:#9a3412; line-height:1.7;"></div>
         <div id="monitor-result" class="hidden" style="background:#f0fdf4;border:1px solid #bbf7d0;border-radius:8px;padding:8px 14px;margin-top:12px;font-size:13px;color:#166534;"></div>
         <div style="display:flex; gap:8px; flex-wrap:wrap; align-items:center; margin-top:8px;" id="quick-add-bar">
@@ -105,21 +237,25 @@
         </div>
         <div id="quick-add-groups" style="margin-top:10px;">
           <div style="margin-bottom:10px;">
-            <div style="font-size:12px; color:#6b7280; margin-bottom:6px;">API 接口型（填 API Key 查余额）· 标「接口优先」的官方接口失败时会自动回退浏览器抓取</div>
+            <div style="font-size:12px; color:#6b7280; margin-bottom:6px;">API 接口型（填 API Key 查余额）· 标「API+抓取」的平台创建实例时可二选一</div>
             <div id="quick-add-api" style="display:flex; gap:6px; flex-wrap:wrap;"></div>
           </div>
           <div>
-            <div style="font-size:12px; color:#6b7280; margin-bottom:6px;">浏览器抓取型（无需 API Key，登录后自动抓取）</div>
+            <div style="font-size:12px; color:#6b7280; margin-bottom:6px;">浏览器抓取型（无需 API Key：先登录检测到登录态，再创建实例；登录后自动抓取）</div>
             <div id="quick-add-scrape" style="display:flex; gap:6px; flex-wrap:wrap;"></div>
           </div>
         </div>
-        <div id="add-form" class="card hidden" style="margin-top:16px;">
+        <div id="add-form-mask" class="modal-mask hidden" onclick="onModalMaskClick(event)">
+        <div id="add-form" class="card modal-card">
+          <button type="button" class="modal-close" onclick="hideAddForm()" aria-label="关闭浮层" title="关闭">×</button>
           <h2 id="form-title">添加平台</h2>
           <div id="form-hint" class="hidden" style="background:#f0f7ff; border:1px solid #bfdbfe; border-radius:6px; padding:10px 14px; font-size:13px; color:#1e40af; margin-bottom:12px; line-height:1.7;"></div>
           <div id="scrape-hint" class="hidden" style="background:#fef9c3; border:1px solid #fde68a; border-radius:6px; padding:10px 14px; font-size:13px; color:#854d0e; margin-bottom:12px; line-height:1.7;">🔑 浏览器抓取型无需 API Key。首次使用需先登录一次：双击项目目录的 <b>重新登录.bat</b>（或执行 <code>node scripts/wallet-login.mjs</code>），脚本会自动列出所有「浏览器抓取型」平台逐个登录（新添加的平台也会自动包含）。登录成功后保存平台，之后定时巡检自动抓取余额。<br>⚠️ 余额查询 URL 请填写该平台的钱包余额页面网址（余额显示在哪一页就填哪一页），抓取关键词对应页面上余额旁边的文字。<br>💡 <b>api_scrape</b> 模式 = 先用官方接口查（更准、不会弹窗、不依赖登录态），官方接口查不到再回退到浏览器抓取。选这个模式时：API Key 必填（否则直接走抓取）；「余额查询 URL」填控制台页面地址（兜底抓取用）；「官方接口 URL / JSON path」留空则用该 provider 的内置官方接口。</div>
+          <div id="manual-scrape-note" class="hidden" style="background:#f0fdf4;border:1px solid #bbf7d0;border-radius:6px;padding:8px 12px;font-size:13px;color:#166534;margin-bottom:12px;line-height:1.7;">🌐 浏览器抓取型无需 API Key：保存后若该实例还没有登录态，会立即引导你完成登录（登录态按实例独立保存，一平台多账号互不影响），登录成功后定时巡检自动抓取余额。</div>
           <div class="grid" id="form-grid">
-            <div class="field" data-field="name"><label>平台名称 *</label><input id="f-name" placeholder="如 OpenAI"></div>
-            <div class="field" data-field="provider" data-zone="more"><label>Provider</label>
+            <div class="field" data-field="name"><label>平台 *</label><input id="f-name" placeholder="如 OpenAI"></div>
+            <div class="field" data-field="label"><label>名称（可选）</label><input id="f-label" placeholder="可选：区分同平台多实例，如 主力号；留空自动编号"></div>
+            <div class="field" data-field="provider" data-zone="more"><label>接口适配器</label>
               <select id="f-provider">
                 <option value="openai">openai</option>
                 <option value="anthropic">anthropic</option>
@@ -128,7 +264,7 @@
                 <option value="tencent">tencent（腾讯云/混元）</option>
                 <option value="dashscope">dashscope（阿里云百炼）</option>
                 <option value="volcengine">volcengine（火山引擎）</option>
-                <option value="moonshot">moonshot（月之暗面/Kimi）</option>
+                <option value="moonshot">moonshot（月之暗面）</option>
                 <option value="mimo">mimo（小米MiMo）</option>
                 <option value="minimax">minimax（MiniMax）</option>
                 <option value="zhipu">zhipu（智谱 BigModel）</option>
@@ -136,9 +272,6 @@
                 <option value="anyaigc">anyaigc（AnyAIGC）</option>
                 <option value="runninghub">runninghub（RunningHub 国内站）</option>
                 <option value="yinchao">yinchao（音潮开放平台）</option>
-                <option value="carrier_cmcc">carrier_cmcc（中国移动个人卡）</option>
-                <option value="carrier_ct">carrier_ct（中国电信个人卡）</option>
-                <option value="carrier_cu">carrier_cu（中国联通个人卡）</option>
               </select>
             </div>
             <div class="field" data-field="key"><label id="f-key-label">API Key <a href="https://platform.deepseek.com/api_keys" target="_blank" rel="noopener noreferrer" style="font-size:12px;color:var(--brand);margin-left:4px;">查看帮助</a></label><input id="f-key" placeholder="sk-"></div>
@@ -146,7 +279,6 @@
             <div class="field" data-field="balance-type" data-zone="more"><label>余额类型</label>
               <select id="f-balance-type" onchange="onBalanceTypeChange()">
                 <option value="api">api（官方接口，填 API Key）</option>
-                <option value="api_scrape">api_scrape（官方接口优先，失败回退浏览器抓取）</option>
                 <option value="scrape">scrape（浏览器抓取，无需 Key）</option>
                 <option value="manual">manual（手动录入）</option>
               </select>
@@ -155,19 +287,54 @@
             <div class="field" data-field="json-path" data-zone="more"><label>余额 JSON path</label><input id="f-json-path" placeholder="如 total_available"></div>
             <div class="field" data-field="api-url" data-zone="more"><label>官方接口 URL（api_scrape 模式，可选）</label><input id="f-api-url" placeholder="留空则用该 provider 的内置官方接口"></div>
             <div class="field" data-field="api-json-path" data-zone="more"><label>官方接口 JSON path（api_scrape 模式，可选）</label><input id="f-api-json-path" placeholder="如 data.available_balance"></div>
-            <div class="field" data-field="currency" data-zone="more"><label>币种</label><input id="f-currency" value="USD"></div>
+            <div class="field" data-field="currency"><label>币种</label><input id="f-currency" value="CNY" placeholder="如 CNY / USD"></div>
             <div class="field" data-field="threshold" data-zone="more"><label>充值阈值</label><input id="f-threshold" type="number" value="200"></div>
             <div class="field" data-field="recharge" data-zone="more"><label>充值金额</label><input id="f-recharge" type="number" value="500"></div>
             <div class="field" data-field="target" data-zone="more"><label>补足目标（可选）</label><input id="f-target" type="number" placeholder="留空=固定金额"></div>
           </div>
-          <button type="button" id="more-toggle" onclick="toggleMoreZone()" style="margin-top:10px;font-size:13px;color:var(--muted);background:none;border:1px dashed var(--border);border-radius:6px;padding:6px 14px;cursor:pointer;">▸ 展开其他设置（币种 / 阈值 / 接口地址…）</button>
+          <button type="button" id="more-toggle" onclick="toggleMoreZone()" style="margin-top:10px;font-size:13px;color:var(--muted);background:none;border:1px dashed var(--border);border-radius:6px;padding:6px 14px;cursor:pointer;">▸ 展开其他设置（阈值 / 接口地址…）</button>
           <button class="primary" id="form-save-btn" onclick="savePlatform()">保存</button>
           <button onclick="hideAddForm()">取消</button>
         </div>
+        </div>
+        <div id="dual-type-mask" class="modal-mask hidden" onclick="onDualMaskClick(event)">
+          <div class="card modal-card" style="max-width:480px;">
+            <button type="button" class="modal-close" onclick="closeDualSelector()" aria-label="关闭浮层" title="关闭">×</button>
+            <h2 id="dual-title">选择创建方式</h2>
+            <div style="font-size:13px;color:var(--muted);margin-bottom:14px;line-height:1.7;">该平台同时支持官方接口与浏览器抓取，请选择本次创建实例的方式（2026-11-27 起新建不再提供「接口优先+抓取兜底」混合模式，既有混合实例不受影响）：</div>
+            <div style="display:flex;gap:12px;">
+              <button id="dual-api-btn" style="flex:1;padding:14px 10px;border:1px solid var(--brand);border-radius:8px;background:#eff6ff;cursor:pointer;font-size:14px;line-height:1.6;">🔌 API 接口<br><span style="font-size:12px;color:var(--muted);">填 API Key，官方接口查余额</span></button>
+              <button id="dual-scrape-btn" style="flex:1;padding:14px 10px;border:1px solid #d1d5db;border-radius:8px;background:#fff;cursor:pointer;font-size:14px;line-height:1.6;">🌐 浏览器抓取<br><span style="font-size:12px;color:var(--muted);">无需 Key，先登录再创建</span></button>
+            </div>
+          </div>
+        </div>
+        <div id="scrape-form-mask" class="modal-mask hidden" onclick="onScrapeMaskClick(event)">
+          <div class="card modal-card" style="max-width:500px;">
+            <button type="button" class="modal-close" onclick="closeScrapeForm()" aria-label="关闭浮层" title="关闭">×</button>
+            <h2 id="scrape-form-title">快速添加</h2>
+            <div id="scrape-form-hint" class="hidden" style="background:#f0f7ff;border:1px solid #bfdbfe;border-radius:6px;padding:10px 14px;font-size:13px;color:#1e40af;margin-bottom:12px;line-height:1.7;"></div>
+            <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px;margin-bottom:10px;">
+              <div class="field" style="margin:0;"><label>平台</label><input id="sf-name" disabled></div>
+              <div class="field" style="margin:0;"><label>名称（可选）</label><input id="sf-label" placeholder="可选：如 主力号/副卡；留空自动编号"></div>
+            </div>
+            <div style="display:flex;align-items:center;gap:10px;margin:6px 0 12px;padding:10px 12px;border:1px dashed var(--border);border-radius:8px;">
+              <button id="sf-login-btn" onclick="scrapePreviewLogin()">登录</button>
+              <span id="sf-login-dot" style="width:10px;height:10px;border-radius:999px;background:#9ca3af;display:inline-block;flex:0 0 auto;"></span>
+              <span id="sf-login-text" style="font-size:13px;color:var(--muted);">检测登录态中…</span>
+            </div>
+            <div id="sf-noLogin-note" class="hidden" style="background:#fffbeb;border:1px solid #fde68a;border-radius:6px;padding:8px 12px;font-size:13px;color:#854d0e;margin-bottom:12px;line-height:1.7;"></div>
+            <div style="display:flex;gap:8px;">
+              <button class="primary" id="sf-create-btn" onclick="scrapeCreate()" disabled>创建实例</button>
+              <button onclick="closeScrapeForm()">取消</button>
+            </div>
+          </div>
+        </div>
+        <div style="overflow-x:auto;">
         <table style="margin-top:16px;" id="platform-table">
-          <thead><tr><th>名称</th><th>Provider</th><th>余额</th><th>阈值</th><th>充值金额</th><th>最后查询</th><th>状态</th><th>操作</th></tr></thead>
+          <thead><tr><th>名称</th><th>适配器</th><th>余额</th><th>币种</th><th>阈值</th><th>充值金额</th><th>最后查询</th><th>状态</th><th>操作</th></tr></thead>
           <tbody></tbody>
         </table>
+        </div>
         <div id="platform-pagination" style="display:flex;gap:10px;align-items:center;margin-top:12px;font-size:13px;color:var(--muted);"></div>
       </div>
     </section>
@@ -294,18 +461,11 @@
       const others = (list || [])
         .filter((x) => x.same_account_note === key && x.id !== p.id)
         .map((x) => x.name);
+      // 同组只剩自己一个实例时，「同一账户」没有指代对象，直接不显示角标
+      if (!others.length) return '';
       const label = SAME_ACCOUNT_TEXT[key] || '同一账户余额';
-      const text = others.length
-        ? `与「${others.join('」「')}」${label}`
-        : label;
+      const text = `与「${others.join('」「')}」${label}`;
       return `<div class="pts-line" title="这些平台查的是同一个账户余额，不会生成重复充值提醒">${esc(text)}</div>`;
-    }
-    // 余额来源：如实告诉用户这个数是从官方接口还是浏览器抓取来的
-    function balanceSourceLine(p) {
-      const s = p && p.balance_source;
-      if (!s) return '';
-      const label = { api: '官方接口', scrape: '浏览器抓取', manual: '手动录入' }[s] || s;
-      return `<div class="pts-line">来源：${esc(label)}</div>`;
     }
     function providerLabel(p) {
       return CARRIER_LABELS[p.provider] || esc(p.provider);
@@ -344,7 +504,7 @@
         hint:'需填两项：<b>API Key</b> 填 <b>System Access Token</b>（控制台 Profile → Profile Settings → Account &amp; Security → API Call Tokens → Generate Token，重新生成会使旧 Token 立即作废），<b>Secret Key</b> 填数字用户 ID（同页顶部 <code>ID:</code>，仅数字）。余额按 500000 quota = $1 换算（2026-11-24 已与控制台显示精确校准）。' },
       // ===== 浏览器抓取型（scrape）：无官方余额 API，打开钱包页读取余额 =====
       // 首次需运行 node scripts/wallet-login.mjs 登录一次，之后定时巡检自动抓取
-      { provider:'runninghub', name:'RunningHub国内站', currency:'CNY', threshold:200,
+      { provider:'runninghub', name:'RunningHub', currency:'CNY', threshold:200,
         url:'https://www.runninghub.cn/uc/openapi/accountStatus',
         hint:'只需填 <b>API Key</b>（RunningHub 控制台个人中心/API 设置页获取）。余额=钱包法币余额 remainMoney（CNY）；官方接口 POST accountStatus，Bearer 与 apikey 双传。' },
       { provider:'tencent', name:'腾讯云', balanceType:'api_scrape', currency:'CNY', threshold:200, apiUrl:'https://billing.tencentcloudapi.com', apiJsonPath:'Response.Balance',
@@ -353,18 +513,15 @@
       { provider:'mimo', name:'MIMO', balanceType:'api_scrape', currency:'CNY', threshold:200, apiUrl:'https://api.xiaomimimo.com/v1/platform/balance', apiJsonPath:'balance_infos[0].total_available',
         url:'https://platform.xiaomimimo.com/console/balance', jsonPath:'{"keyword":"余额","regex":"余额[^\\\\d¥￥]{0,12}?[¥￥]\\\\s*(-?\\\\d[\\\\d,]*(?:\\\\.[0-9]+)?)","max":10000000}',
         hint:'官方接口优先：小米 MiMo 开放平台 GET <code>/v1/platform/balance</code>，取总可用余额 <code>balance_infos[0].total_available</code>（元）；接口失败再退回浏览器抓取。只需填 <b>API Key</b>（<a href="https://mimo.mi.com/console/access" target="_blank" rel="noopener noreferrer" style="color:var(--brand);">开放平台 API Key 页</a>）。不填密钥则直接走浏览器抓取，需先运行 <code>node scripts/wallet-login.mjs</code> 登录一次。' },
-      { provider:'moonshot', name:'Kimi', balanceType:'api_scrape', currency:'CNY', threshold:200, apiUrl:'https://api.moonshot.cn/v1/users/me/balance', apiJsonPath:'data.available_balance', sameAccount:'moonshot',
-        url:'https://platform.kimi.com/console/account', jsonPath:'{"keyword":"可用余额","max":10000000}',
-        hint:'官方接口优先：GET <code>api.moonshot.cn/v1/users/me/balance</code>，取 <code>data.available_balance</code>（元）；接口失败再退回浏览器抓取。只需填 <b>API Key</b>（<a href="https://platform.moonshot.cn/console/api-keys" target="_blank" rel="noopener noreferrer" style="color:var(--brand);">月之暗面「API Key 管理」页</a>）。不填密钥则直接走浏览器抓取，需先运行 <code>node scripts/wallet-login.mjs</code> 登录一次。⚠️ 与「月之暗面」是同一个账户余额，充值提醒只生成一张单。' },
       { provider:'dashscope', name:'阿里云', balanceType:'api_scrape', currency:'CNY', threshold:200, apiUrl:'https://business.aliyuncs.com', apiJsonPath:'Data.AvailableAmount',
         url:'https://billing-cost.console.aliyun.com', jsonPath:'{"keyword":"可用额度","max":10000000}',
         hint:'官方接口优先：阿里云 BssOpenAPI QueryAccountBalance，取可用额度 <code>Data.AvailableAmount</code>（元）；接口失败再退回浏览器抓取。需填两项：<b>API Key</b> 填 <a href="https://ram.console.aliyun.com/manage/ak" target="_blank" rel="noopener noreferrer" style="color:var(--brand);">AccessKey ID</a>，<b>Secret Key</b> 填同页的 <b>AccessKey Secret</b>。不填密钥则直接走浏览器抓取，需先运行 <code>node scripts/wallet-login.mjs</code> 登录一次。' },
       { provider:'scrape', name:'MiniMax', balanceType:'scrape', currency:'CNY', threshold:200,
         url:'https://platform.minimax.cn/console/recharge-records', jsonPath:'{"keyword":"可用额度","max":10000000}',
         hint:'浏览器方式：无需 API Key，打开 MiniMax 账户钱包页读「可用额度」（人民币余额）。官方接口返回的是请求次数而非金额，量纲不同，所以这里保持纯抓取。首次需运行 <code>node scripts/wallet-login.mjs</code> 登录一次。' },
-      { provider:'zhipu', name:'智谱', balanceType:'api_scrape', currency:'CNY', threshold:200, apiUrl:'https://open.bigmodel.cn/api/biz/account/query-customer-account-report', apiJsonPath:'data.balance',
+      { provider:'zhipu', name:'智谱', balanceType:'scrape', currency:'CNY', threshold:200,
         url:'https://open.bigmodel.cn/finance-center/finance/overview', jsonPath:'{"keyword":"当前余额","max":10000000}',
-        hint:'官方接口优先：智谱控制台账户接口，取 <code>data.balance</code>（元）；接口失败再退回浏览器抓取。需填 <b>Secret Key</b> = 控制台登录 Token（<a href="https://open.bigmodel.cn/" target="_blank" rel="noopener noreferrer" style="color:var(--brand);">登录后从浏览器 DevTools 的 Authorization 头复制</a>，过期需重新复制）；<b>API Key</b> 填模型调用 Key（余额接口用不到，可留空）。不填 Token 则直接走浏览器抓取，需先运行 <code>node scripts/wallet-login.mjs</code> 登录一次。' },
+        hint:'浏览器方式：无需 API Key，登录智谱开放平台「财务管理」读「当前余额」（人民币余额）。智谱官方没有查余额的 API，控制台 Token 又容易过期，所以保持纯抓取。首次需运行 <code>node scripts/wallet-login.mjs</code> 登录一次。' },
       { provider:'yinchao', name:'音潮开放平台', balanceType:'scrape', currency:'CNY', threshold:200,
         url:'https://platform.yinchaoyongxian.com/console/overview', jsonPath:'{"keyword":"当前余额","max":10000000}',
         hint:'浏览器方式：无需 API Key，打开音潮控制台「账户总览」读「当前余额」。首次需运行 <code>node scripts/wallet-login.mjs yinchao</code> 登录一次（手机号+短信验证码）。' },
@@ -392,16 +549,30 @@
         btn.className = 'quick-btn';
         btn.style.cssText = 'display:inline-flex;align-items:center;gap:6px;border:1px solid #d1d5db;border-radius:6px;background:#fff;padding:4px 10px;cursor:pointer;font-size:13px;';
         btn.innerHTML = `${iconFor(t)}<span>${t.name}</span>`;
-        // api_scrape 模板（官方接口优先、抓取兜底）加个标记，与纯接口型区分开
-        if (t.balanceType === 'api_scrape') {
-          btn.innerHTML += '<span class="badge info" style="padding:0 6px;font-size:10px;">接口优先</span>';
+        // 创建入口规则（2026-11-27）：三类入口——纯 API / 纯抓取 / 双类型（创建时二选一）
+        const kind = templateKind(t);
+        // 双类型模板加「API+抓取」标记：点击后先选创建方式（不再提供接口优先+抓取兜底的混合模式）
+        if (kind === 'dual') {
+          btn.innerHTML += '<span class="badge info" style="padding:0 6px;font-size:10px;">API+抓取</span>';
         }
-        // 抓取型模板一键创建：所有字段模板已定死，见 quickCreateScrape；
-        // API 接口型仍走预填表单（需要用户填密钥，且同名要转编辑防重复）
-        btn.onclick = () => ((t.group === 'scrape' || t.balanceType === 'scrape') ? quickCreateScrape(t) : showQuickForm(t));
-        // 分组：运营商虽然 balance_type=api（靠 provider 走专用查询器），
-        // 但用户无需填 API Key、需先登录网厅，语义上属“浏览器抓取型”，放第二组
-        const bar = ((t.group || (t.balanceType === 'scrape')) ? scrapeBar : apiBar);
+        // 三大运营商快捷入口停用（2026-11-27 用户要求）：实例已固定接入，置灰禁点防误建
+        if (String(t.provider || '').startsWith('carrier_')) {
+          btn.disabled = true;
+          btn.style.opacity = '0.45';
+          btn.style.cursor = 'not-allowed';
+          btn.title = '三大运营商已固定接入，快捷新增已停用';
+          (scrapeBar || apiBar).appendChild(btn);
+          continue;
+        }
+        // 分发：纯 API → 预填表单（凭据必填）；纯抓取 → 极简浮层（先登录再创建）；
+        // 双类型 → 先弹二选一选择器，选 API 走表单、选抓取走极简浮层
+        btn.onclick = () => {
+          if (kind === 'dual') openDualSelector(t);
+          else if (kind === 'scrape') openScrapeForm(t);
+          else showQuickForm(t);
+        };
+        // 分组：双类型/纯 API 在第一组；纯抓取与运营商（语义上属“浏览器抓取型”）在第二组
+        const bar = (kind === 'scrape' ? scrapeBar : apiBar);
         (bar || apiBar).appendChild(btn);
       }
     }
@@ -414,7 +585,7 @@
       moonshot:  { hide:['key-secret','balance-url','json-path'], keyLabel:'API Key <a href="https://platform.moonshot.cn/console/api-keys" target="_blank" rel="noopener noreferrer" style="font-size:12px;color:var(--brand);margin-left:4px;">查看帮助</a>' },
       minimax:   { hide:['key-secret','balance-url','json-path'], keyLabel:'Token Plan API Key <a href="https://platform.minimax.cn/console/access?tab=api-keys" target="_blank" rel="noopener noreferrer" style="font-size:12px;color:var(--brand);margin-left:4px;">查看帮助</a>' },
       mimo:      { hide:['key-secret','balance-url','json-path'], keyLabel:'API Key <a href="https://mimo.mi.com/console/access" target="_blank" rel="noopener noreferrer" style="font-size:12px;color:var(--brand);margin-left:4px;">查看帮助</a>' },
-      zhipu:     { hide:['balance-url','json-path'], keyLabel:'API Key（模型调用）<a href="https://open.bigmodel.cn/apikey/platform" target="_blank" rel="noopener noreferrer" style="font-size:12px;color:var(--brand);margin-left:4px;">查看帮助</a>', secretLabel:'控制台 Token（JWT）<a href="https://open.bigmodel.cn/" target="_blank" rel="noopener noreferrer" style="font-size:12px;color:var(--brand);margin-left:4px;">查看帮助</a><span style="font-size:12px;color:#64748b;margin-left:4px;">官方未提供余额查询 API，余额查询依赖此 Token</span>' },
+      zhipu:     { hide:['key','key-secret'], keyLabel:'无需 API Key（浏览器登录抓取）', secretLabel:'无需 Secret Key' },
       volcengine:{ hide:['balance-url','json-path'], keyLabel:'Access Key ID（AK）<a href="https://console.volcengine.com/iam/accesskey/" target="_blank" rel="noopener noreferrer" style="font-size:12px;color:var(--brand);margin-left:4px;">查看帮助</a>', secretLabel:'Secret Access Key（SK）<a href="https://console.volcengine.com/iam/accesskey/" target="_blank" rel="noopener noreferrer" style="font-size:12px;color:var(--brand);margin-left:4px;">查看帮助</a>' },
       dashscope: { hide:['balance-url','json-path'], keyLabel:'AccessKey ID<a href="https://ram.console.aliyun.com/manage/ak" target="_blank" rel="noopener noreferrer" style="font-size:12px;color:var(--brand);margin-left:4px;">查看帮助</a>', secretLabel:'AccessKey Secret<a href="https://ram.console.aliyun.com/manage/ak" target="_blank" rel="noopener noreferrer" style="font-size:12px;color:var(--brand);margin-left:4px;">查看帮助</a>' },
       tencent:   { hide:['balance-url','json-path'], keyLabel:'SecretId<a href="https://console.cloud.tencent.com/cam/capi" target="_blank" rel="noopener noreferrer" style="font-size:12px;color:var(--brand);margin-left:4px;">查看帮助</a>', secretLabel:'SecretKey<a href="https://console.cloud.tencent.com/cam/capi" target="_blank" rel="noopener noreferrer" style="font-size:12px;color:var(--brand);margin-left:4px;">查看帮助</a>' },
@@ -429,7 +600,7 @@
     };
     // ===== 表单分区：必填区 + 「其他设置」折叠区 =====
     //
-    // HTML 里 data-zone="more" 的字段属于折叠区（币种/阈值/充值金额/各类 URL/path，
+    // HTML 里 data-zone="more" 的字段属于折叠区（阈值/充值金额/各类 URL/path，
     // 以及裸表单才需要的 Provider/余额类型）。默认收起，点「展开其他设置」才显示。
     // 折叠 ≠ 丢弃：字段值始终保留（display:none 不清 value），保存时照常提交，后端零改动。
     // 三层可见性叠加，setFieldVisible 是唯一出口：
@@ -452,7 +623,7 @@
       baseVisibility[name] = visible;
       applyFieldState(name);
     }
-    const MORE_ZONE_LABEL_CLOSED = '▸ 展开其他设置（币种 / 阈值 / 接口地址…）';
+    const MORE_ZONE_LABEL_CLOSED = '▸ 展开其他设置（阈值 / 接口地址…）';
     const MORE_ZONE_LABEL_OPEN = '▾ 收起其他设置';
     function setMoreOpen(open) {
       moreOpen = open;
@@ -487,6 +658,7 @@
         setFieldVisible('api-url', false);
         setFieldVisible('api-json-path', false);
         hint.classList.remove('hidden');
+        document.querySelector('#manual-scrape-note').classList.remove('hidden');
       } else if (type === 'api_scrape') {
         applyFieldVisibility(document.querySelector('#f-provider').value);
         setFieldVisible('balance-url', true);
@@ -494,59 +666,179 @@
         setFieldVisible('api-url', true);
         setFieldVisible('api-json-path', true);
         hint.classList.remove('hidden');
+        document.querySelector('#manual-scrape-note').classList.add('hidden');
       } else {
         applyFieldVisibility(document.querySelector('#f-provider').value);
         setFieldVisible('api-url', false);
         setFieldVisible('api-json-path', false);
         hint.classList.add('hidden');
+        document.querySelector('#manual-scrape-note').classList.add('hidden');
       }
     }
 
     // 同一账户分组键：快速添加模板带入（编辑时不改，避免误清已有分组）
     let pendingSameAccount = null;
 
-    // 快速添加模板 → 已存在的平台实例（用于避免重复新建）
+    // 快速添加模板 → 该平台是否已有实例（名称模型 2026-11-27 对齐）——只回答「存在与否」，不锁定具体实例
     //
     // 两级匹配：
-    //   1. 同名优先：模板名与实例名一致（腾讯云、MIMO、Kimi、阿里云、火山引擎…）。
-    //   2. provider 兜底：名字对不上但 provider 唯一时也算同一个平台。
-    //      实测 2026-11-26：模板叫「智谱」，而库里那个实例叫「智谱AI」，
-    //      只按名字匹配会新建出一个重复监控同一账户的实例（余额重复、充值提醒重复）。
-    //      但 provider 相同的不一定是一个账户（月之暗面与 Kimi 同为 moonshot 却是两个实例），
-    //      所以只有「该 provider 下恰好只有一个实例」时才按 provider 匹配。
+    //   1. 同名优先：模板名与实例名一致（腾讯云、MIMO、阿里云、火山引擎…）。
+    //   2. provider 兜底：名字对不上但库里已有该 provider 的任意实例（实测 2026-11-26：
+    //      模板「智谱」vs 实例「智谱AI」，只按名字匹配会静默造出重复实例）。已有实例时统一打开
+    //      「新建实例」表单由名称字段区分，所以兜底放宽为任意同 provider 实例（旧「恰好一个」
+    //      限制为「转编辑」时代产物，已随名称模型移除）。副卡等场景由名称字段区分。
+
     function findExistingForTemplate(t) {
       const list = platformsCache || [];
       const byName = list.find((p) => p.name === t.name);
       if (byName) return byName;
       const sameProvider = list.filter((p) => p.provider === t.provider);
-      if (sameProvider.length === 1) return sameProvider[0];
+      if (sameProvider.length >= 1) return sameProvider[0];
       return null;
     }
 
-    // 抓取型模板一键创建：表格里每个字段都由模板定死（运营商连密钥栏都隐藏），
-    // 再让用户过一遍表单只是多余步骤——点击直接按模板值建实例，成功后引导登录。
-    // 重名时弹一次确认，默认名自动加序号（中国移动话费 → 中国移动话费2），
-    // 覆盖同一运营商多账户（主卡/副卡）场景，全程零打字。
-    // API 接口型模板不走这里：它们需要用户填密钥，且同名应转编辑防重复（见 showQuickForm）。
-    async function quickCreateScrape(t) {
-      const list = platformsCache || [];
-      let name = t.name;
-      if (list.some((p) => p.name === name)) {
-        // 已有同名实例：算出下一个可用序号名，确认后创建（第二个账户）
-        let n = 2;
-        while (list.some((p) => p.name === `${t.name}${n}`)) n++;
-        const nextName = `${t.name}${n}`;
-        const msg = `已存在「${t.name}」。要再建一个新实例吗？\n\n新实例名称：${nextName}\n（同一运营商的第二个账户，如副卡；登录态按实例独立保存，互不影响）`;
-        if (!confirm(msg)) return;
-        name = nextName;
+    // ===== 创建入口规则（2026-11-27）：按平台能力统一创建实例入口 =====
+    // 模板三分类：纯 API（预填表单+凭据必填）/ 纯抓取（极简浮层，先登录再创建）/
+    // 双类型（先弹「API 接口 / 浏览器抓取」二选一，不再提供接口优先+抓取兜底的混合模式）。
+    // 三大运营商快捷入口保持停用（实例已固定接入）。
+    function templateKind(t) {
+      if (t.balanceType === 'api_scrape') return 'dual';
+      if (t.balanceType === 'scrape' || t.group === 'scrape') return 'scrape';
+      return 'api';
+    }
+
+    // —— 双类型选择器（极简模态）：选 API 走预填表单，选抓取走极简浮层 ——
+    function dualModalEsc(e){ if (e.key === 'Escape') closeDualSelector(); }
+    function openDualSelector(t) {
+      document.querySelector('#dual-title').textContent = `创建「${t.name}」实例`;
+      document.querySelector('#dual-api-btn').onclick = () => {
+        closeDualSelector();
+        openQuickForm(t, { hasExisting: Boolean(findExistingForTemplate(t)), dualMode: 'api' });
+      };
+      document.querySelector('#dual-scrape-btn').onclick = () => { closeDualSelector(); openScrapeForm(t); };
+      document.querySelector('#dual-type-mask').classList.remove('hidden');
+      document.body.style.overflow = 'hidden';
+      document.removeEventListener('keydown', dualModalEsc);
+      document.addEventListener('keydown', dualModalEsc);
+    }
+    function closeDualSelector() {
+      document.querySelector('#dual-type-mask').classList.add('hidden');
+      document.body.style.overflow = '';
+      document.removeEventListener('keydown', dualModalEsc);
+    }
+    function onDualMaskClick(e){ if (e.target === e.currentTarget) closeDualSelector(); }
+
+    // —— 抓取型极简浮层：平台名锁定、名称可选（留空自动编号）、登录态自动检测解锁创建 ——
+    // 预检 /api/login-state-preview：mode=prelogin（规范名且尚无实例）→ 可预登录，检测到即解锁；
+    // mode=postcreate（自定义名，或已有实例——登录态隔离：新实例按 id 独立）→「先创建实例→引导登录」。
+    let scrapeTemplate = null;      // 当前浮层对应的模板
+    let scrapeLoginForced = false;  // 预检判 postcreate（非规范名或已有实例）→ 创建不设登录门禁（先建后登录）
+    let scrapePollTimer = null;     // 登录态轮询定时器；浮层关闭即清除
+    function scrapeModalEsc(e){ if (e.key === 'Escape') closeScrapeForm(); }
+    function openScrapeForm(t) {
+      scrapeTemplate = t;
+      scrapeLoginForced = false;
+      const hasExisting = Boolean(findExistingForTemplate(t));
+      document.querySelector('#scrape-form-title').textContent = hasExisting ? `新建实例：${t.name}` : `快速添加：${t.name}`;
+      document.querySelector('#sf-name').value = t.name;
+      document.querySelector('#sf-label').value = '';
+      const hint = document.querySelector('#scrape-form-hint');
+      hint.innerHTML = 'ℹ️ ' + (t.hint || '浏览器抓取型：无需 API Key，登录一次后自动抓取余额。');
+      hint.classList.remove('hidden');
+      if (hasExisting) showToast(`「${t.name}」已有实例，正在新建下一个实例——「名称」可留空，自动按「${t.name}+序号」编号`, 'info', 6000);
+      setScrapeLoginUI('checking');
+      document.querySelector('#scrape-form-mask').classList.remove('hidden');
+      document.body.style.overflow = 'hidden';
+      document.removeEventListener('keydown', scrapeModalEsc);
+      document.addEventListener('keydown', scrapeModalEsc);
+      refreshScrapeLoginState();
+      startScrapePolling();
+    }
+    function closeScrapeForm() {
+      scrapeTemplate = null;
+      stopScrapePolling();
+      document.querySelector('#scrape-form-mask').classList.add('hidden');
+      document.body.style.overflow = '';
+      document.removeEventListener('keydown', scrapeModalEsc);
+    }
+    function onScrapeMaskClick(e){ if (e.target === e.currentTarget) closeScrapeForm(); }
+
+    function setScrapeLoginUI(state) {
+      const dot = document.querySelector('#sf-login-dot');
+      const text = document.querySelector('#sf-login-text');
+      const loginBtn = document.querySelector('#sf-login-btn');
+      const createBtn = document.querySelector('#sf-create-btn');
+      const note = document.querySelector('#sf-noLogin-note');
+      const color = { checking:'#9ca3af', logging:'#d97706', ok:'#16a34a', missing:'#9ca3af', forced:'#d97706' }[state] || '#9ca3af';
+      dot.style.background = color;
+      if (state === 'checking') text.textContent = '检测登录态中…';
+      else if (state === 'logging') text.textContent = '登录中…完成登录后自动检测并解锁';
+      else if (state === 'ok') text.textContent = '✅ 已检测到登录态，可以创建实例';
+      else if (state === 'forced') text.textContent = '创建后引导登录（登录态按实例独立保存）';
+      else text.textContent = '未检测到登录态，请先点击「登录」';
+      if (state === 'forced') {
+        note.textContent = '该平台登录态按实例独立保存（支持一平台多账号各自登录）：先创建实例（名称可留空自动编号），创建成功后会立即引导登录。';
+        note.classList.remove('hidden');
+        loginBtn.disabled = true; loginBtn.textContent = '登录';
+        createBtn.disabled = false;
+      } else {
+        note.classList.add('hidden');
+        loginBtn.disabled = (state === 'logging');
+        if (state !== 'logging') loginBtn.textContent = '登录';
+        createBtn.disabled = (state !== 'ok');
       }
+    }
+
+    async function refreshScrapeLoginState() {
+      if (!scrapeTemplate) return;
+      const t = scrapeTemplate;
+      try {
+        const r = await api(`/api/login-state-preview?name=${encodeURIComponent(t.name)}&provider=${encodeURIComponent(t.provider || '')}`);
+        if (scrapeTemplate !== t) return; // 浮层已切换/关闭，丢弃过期结果
+        if (r.mode === 'prelogin' && r.exists) { setScrapeLoginUI('ok'); stopScrapePolling(); return; }
+        if (r.mode === 'postcreate') { scrapeLoginForced = true; setScrapeLoginUI('forced'); stopScrapePolling(); return; }
+        // prelogin 但还没有登录态：登录脚本在跑显示「登录中」，否则保持未登录并继续轮询
+        let running = false;
+        try { running = Boolean((await api('/api/login/status')).running); } catch {}
+        setScrapeLoginUI(running ? 'logging' : 'missing');
+      } catch { /* 预检失败不打断浮层，轮询会重试 */ }
+    }
+    function startScrapePolling() {
+      stopScrapePolling();
+      scrapePollTimer = setInterval(refreshScrapeLoginState, 3000);
+    }
+    function stopScrapePolling() {
+      if (scrapePollTimer) { clearInterval(scrapePollTimer); scrapePollTimer = null; }
+    }
+
+    // 创建前预登录：拉起登录窗口（仅规范名平台），浮层每 3 秒轮询登录态文件，检测到即解锁创建
+    async function scrapePreviewLogin() {
+      if (!scrapeTemplate) return;
+      const btn = document.querySelector('#sf-login-btn');
+      btn.disabled = true; btn.textContent = '登录中';
+      try {
+        const r = await api('/api/login/preview', { method:'POST', body:{ name: scrapeTemplate.name, provider: scrapeTemplate.provider } });
+        showToast(r.message || '登录窗口已打开', 'info', 6000);
+      } catch (e) {
+        showToast('启动登录失败：' + e.message, 'info', 6000);
+      }
+      setScrapeLoginUI('logging');
+      startScrapePolling();
+    }
+
+    // 极简浮层创建：字段全由模板定死（抓取型无需密钥），名称可选留空自动编号；
+    // 创建后按实例自己的登录态 key 再检一次，缺登录态立即引导登录（覆盖自定义名场景）。
+    async function scrapeCreate() {
+      const t = scrapeTemplate;
+      if (!t) return;
+      const label = document.querySelector('#sf-label').value.trim();
       const body = {
-        name, provider: t.provider,
-        balance_type: t.balanceType || 'api',
+        name: t.name, label,
+        provider: t.provider,
+        balance_type: 'scrape',
         balance_api_url: t.url || '',
         balance_json_path: t.jsonPath || '',
-        api_url: t.apiUrl || '',
-        api_json_path: t.apiJsonPath || '',
+        api_url: '', api_json_path: '',
         currency: t.currency, threshold: t.threshold,
         recharge_amount: t.rechargeAmount ?? 500,
         target_amount: null,
@@ -559,46 +851,51 @@
         alert(`创建失败：${e.message}`);
         return;
       }
+      closeScrapeForm();
       loadPlatforms();
-      // 创建成功即引导登录；取消则稍后双击 重新登录.bat 也可以
       try {
         const state = await api(`/api/platforms/${created.id}/login-state`);
         if (state && !state.exists) {
-          const carrier = isCarrier(t.provider);
-          const msg = carrier
-            ? `已创建「${name}」（#${created.id}）。运营商网厅需要登录一次才能查话费余额（需服务密码或短信验证码）。\n\n现在打开登录窗口吗？（取消则稍后双击 重新登录.bat）`
-            : `已创建「${name}」（#${created.id}）。浏览器抓取需要登录一次才能抓取余额。\n\n现在打开登录窗口吗？（取消则稍后双击 重新登录.bat）`;
+          const msg = `已创建「${created.label || t.name}」（#${created.id}）。浏览器抓取需要登录一次才能抓取余额。\n\n现在打开登录窗口吗？（取消则稍后双击 重新登录.bat）`;
           if (confirm(msg)) openLogin(created.id);
         }
       } catch (_) { /* 登录态检测失败不影响创建结果 */ }
     }
 
     function showQuickForm(t) {
-      // 同名平台已存在时，不让用户白填一遍表单再撞唯一约束：
-      // 直接打开已有实例的编辑表单（这正是用户想做的事——填密钥、改配置）。
-      const existing = findExistingForTemplate(t);
-      if (existing) {
-        if (confirm(`已存在平台「${existing.name}」。\n\n点「确定」直接编辑它（填密钥 / 改余额类型），点「取消」返回列表。`)) {
-          editPlatform(existing.id);
-        }
+      // 平台已有实例 → 打开预填的「新建实例」表单（名称可选，留空自动编号），
+      // 不再转编辑、不再弹系统 confirm。
+      if (findExistingForTemplate(t)) {
+        openQuickForm(t, { hasExisting: true });
         return;
       }
+      openQuickForm(t, { hasExisting: false });
+    }
+
+    // 模板表单共用入口（showQuickForm / 双类型选择器共用）：按模板预填整张新建表单（浮层）。
+    // hasExisting=true 表示该平台已有实例：标题换「新建实例」，名称可留空（服务端自动编号）。
+    function openQuickForm(t, { hasExisting = false, dualMode = null } = {}) {
       showAddForm();
-      document.querySelector('#form-title').textContent = `快速添加：${t.name}`;
+      document.querySelector('#form-title').textContent = hasExisting ? `新建实例：${t.name}` : `快速添加：${t.name}`;
       document.querySelector('#f-name').value = t.name;
       document.querySelector('#f-provider').value = t.provider;
-      document.querySelector('#f-balance-type').value = t.balanceType || 'api';
-      document.querySelector('#f-balance-url').value = t.url || '';
-      document.querySelector('#f-json-path').value = t.jsonPath || '';
+      // 双类型模板选「API 接口」创建：余额类型固定 api（不再提供 api_scrape 混合模式），
+      // 抓取兜底字段清空（不发送）；选「浏览器抓取」走极简浮层，不进本表单。
+      document.querySelector('#f-balance-type').value = dualMode === 'api' ? 'api' : (t.balanceType || 'api');
+      document.querySelector('#f-balance-url').value = dualMode === 'api' ? '' : (t.url || '');
+      document.querySelector('#f-json-path').value = dualMode === 'api' ? '' : (t.jsonPath || '');
       // 官方接口配置（api_scrape 模式）：预填后用户不用手抄 URL/JSON path
       document.querySelector('#f-api-url').value = t.apiUrl || '';
       document.querySelector('#f-api-json-path').value = t.apiJsonPath || '';
-      // 同一账户分组：新建时带上（如 Kimi 与「月之暗面」查同一个账户）
+      // 同一账户分组：新建时带上（多个实例查同一账户时合并充值提醒）
       pendingSameAccount = t.sameAccount || null;
       document.querySelector('#f-currency').value = t.currency;
       document.querySelector('#f-threshold').value = t.threshold;
       document.querySelector('#f-recharge').value = String(t.rechargeAmount ?? 500);
       document.querySelector('#f-target').value = '';
+      // 名称可选：留空由服务端自动按「平台名+序号」编号（如 Deepseek1、Deepseek2）
+      document.querySelector('#f-label').placeholder = hasExisting ? '可选：如 主力号/副卡；留空自动编号' : '可选：区分同平台多实例，如 主力号；留空自动编号';
+      if (hasExisting) showToast(`「${t.name}」已有实例，正在新建下一个实例——「名称」可留空，自动按「${t.name}+序号」编号`, 'info', 6000);
       applyFieldVisibility(t.provider);
       onBalanceTypeChange();
       // 模板锁定：Provider/余额类型由模板定死（值已预填，保存照常提交），表单里不出现
@@ -608,6 +905,7 @@
       const hint = document.querySelector('#form-hint');
       hint.innerHTML = 'ℹ️ ' + t.hint;
       hint.classList.remove('hidden');
+      updateCreateGate();
       document.querySelector('#add-form').scrollIntoView({ behavior:'smooth' });
     }
 
@@ -660,7 +958,18 @@
     let platformsPage = 1;
     const PLATFORMS_PAGE_SIZE = 10;
     async function loadPlatforms() {
-      platformsCache = await api('/api/platforms');
+      try {
+        platformsCache = await api('/api/platforms');
+        platformsReachable = true;
+      } catch (e) {
+        // 健康摘要条需要知道「服务不可达」这个状态；错误继续上抛保持原有报错路径
+        platformsReachable = false;
+        renderHealthBar();
+        throw e;
+      }
+      // 行内编辑进行中：暂不重绘表格（60 秒数据刷新会用库值覆盖未保存的输入）。
+      // 保存/取消会退出编辑态并重绘；运营商倒计时等也顺延一轮，编辑是短暂态，可接受。
+      if (inlineEditId != null) return;
       renderPlatforms();
       loadCarrierSessions();
     }
@@ -710,7 +1019,7 @@
         return {
           text: '自动巡检不抓取 · 需手动刷新',
           tip: '该网厅只接受可见窗口（站点拦截无头浏览器），自动巡检为了不弹窗已跳过它。'
-            + '点该行的「刷新余额」按钮手动获取（会短暂弹一次浏览器窗口，属预期）。',
+            + '点该行的「刷新」按钮手动获取（会短暂弹一次浏览器窗口，属预期）。',
         };
       }
       // 保活被关闭（config.json 的 keepalive 段）——如实说，不要拿一个
@@ -817,9 +1126,11 @@
         carrierSessions = {};
         for (const s of (r.sessions || [])) carrierSessions[s.platform_id] = s;
         carrierSessionsFetchedAt = Date.now();
+        renderHealthBar();
         renderCarrierSessions();
         renderPushNotice(r.pushConfigured);
         renderReloginBtn();
+        msgDerive(); // 会话状态变化 → 登录态提醒消息（首轮到达时静默建立基线）
       } catch (e) {
         // 运营商会话接口不可用不影响主列表，静默处理
       }
@@ -849,6 +1160,386 @@
       const has = Object.values(carrierSessions).length > 0;
       btn.style.display = has ? '' : 'none';
     }
+
+    // ===== 页头消息中心 =====
+    // 余额预警（红色，活跃期间常驻）+ 状态变化提醒（抓取失败/登录态/余额恢复，默认样式）。
+    // 每条带时间；预警首次出现时刻与消息历史存 localStorage（上限 100 条，跨刷新保留）；
+    // 零新增请求——全部由页面已加载数据推导；服务端零改动。
+    const MSG_LS_KEY = 'llm-msg-center-v1';
+    const MSG_MAX = 100;
+    const MSG_SESS_LABEL = {
+      nologin: '无登录态记录（尚未登录网厅）',
+      expired: '登录态已过期，需重新登录',
+      expiring: '登录态即将失效，请重新登录',
+      uncalibrated: '登录态存活时间未标定'
+    };
+    let msgRecords = [];   // 历史事件 [{type:'recover'|'fail'|'sess', name, text, at, read}]
+    let msgSnap = { init: false, sessDone: false, low: {}, failed: {}, sess: {} }; // low[id]=首次预警时刻
+    let msgPanelOpen = false;
+
+    function msgInit() {
+      try {
+        const raw = JSON.parse(localStorage.getItem(MSG_LS_KEY) || 'null');
+        if (raw && Array.isArray(raw.records)) msgRecords = raw.records;
+        if (raw && raw.snap && typeof raw.snap === 'object') {
+          msgSnap = {
+            init: !!raw.snap.init, sessDone: !!raw.snap.sessDone,
+            low: raw.snap.low || {}, failed: raw.snap.failed || {}, sess: raw.snap.sess || {}
+          };
+        }
+      } catch (e) { /* 存储损坏按空历史处理 */ }
+      renderMsgUI();
+    }
+
+    function msgSave() {
+      try { localStorage.setItem(MSG_LS_KEY, JSON.stringify({ records: msgRecords.slice(0, MSG_MAX), snap: msgSnap })); } catch (e) {}
+    }
+
+    function msgPush(type, name, text, at) {
+      msgRecords.unshift({ type, name, text, at: at || Date.now(), read: false });
+      if (msgRecords.length > MSG_MAX) msgRecords = msgRecords.slice(0, MSG_MAX);
+    }
+
+    // 运营商登录态归一化（口径与 collectHealthIssues 一致）；非运营商/会话未拉到返回 null
+    function msgSessStateOf(p, now) {
+      if (!isCarrier(p.provider)) return null;
+      const s = carrierSessions[p.id];
+      if (!s) return 'nologin';
+      if (s.state === 'expired' || (s.expiresAt && s.expiresAt <= now)) return 'expired';
+      if (s.state === 'expiring') return 'expiring';
+      if (s.state === 'uncalibrated' || !s.expiresAt) return 'uncalibrated';
+      return 'ok';
+    }
+
+    function msgIsLow(p) { return p.latest_balance != null && p.latest_balance < (p.threshold ?? 200); }
+    function msgIsFail(p) { return !!(p.latest_error || p.query_failed || p.last_query_status === 'fail'); }
+
+    // 状态推导：与上次快照比较，状态变化才新增消息（同一条件不刷屏）
+    function msgDerive() {
+      const list = Array.isArray(platformsCache) ? platformsCache : [];
+      const now = Date.now();
+      if (!msgSnap.init) {
+        // 首次载入：静默建立快照；已在预警中的平台以最后查询时刻为「首次出现」兜底
+        msgSnap = { init: true, sessDone: false, low: {}, failed: {}, sess: {} };
+        for (const p of list) {
+          if (msgIsLow(p)) msgSnap.low[p.id] = p.last_query_at ? new Date(p.last_query_at).getTime() : now;
+          if (msgIsFail(p)) msgSnap.failed[p.id] = true;
+        }
+        msgSave();
+        renderMsgUI();
+        return;
+      }
+      let changed = false;
+      for (const p of list) {
+        if (msgIsLow(p) && msgSnap.low[p.id] == null) { msgSnap.low[p.id] = now; changed = true; }
+        if (!msgIsLow(p) && msgSnap.low[p.id] != null) {
+          delete msgSnap.low[p.id];
+          msgPush('recover', displayNameOf(p), '余额已恢复（回到阈值以上）', now);
+          changed = true;
+        }
+        if (msgIsFail(p) && !msgSnap.failed[p.id]) {
+          msgSnap.failed[p.id] = true;
+          msgPush('fail', displayNameOf(p), '最后一次余额查询失败' + (p.latest_error ? `：${String(p.latest_error).slice(0, 60)}` : ''), now);
+          changed = true;
+        } else if (!msgIsFail(p) && msgSnap.failed[p.id]) {
+          delete msgSnap.failed[p.id]; // 查询恢复成功不打消息，表格与健康面板可见
+          changed = true;
+        }
+      }
+      if (!msgSnap.sessDone) {
+        // 会话数据首轮到达：静默记录基线，避免每次打开页面都为存量状态刷一条消息
+        if (carrierSessionsFetchedAt) {
+          for (const p of list) { const st = msgSessStateOf(p, now); if (st) msgSnap.sess[p.id] = st; }
+          msgSnap.sessDone = true;
+          changed = true;
+        }
+      } else {
+        for (const p of list) {
+          const st = msgSessStateOf(p, now);
+          const prev = msgSnap.sess[p.id] || null;
+          if (st !== prev) {
+            if (st) { msgSnap.sess[p.id] = st; msgPush('sess', displayNameOf(p), MSG_SESS_LABEL[st] || '登录态变化', now); }
+            else delete msgSnap.sess[p.id];
+            changed = true;
+          }
+        }
+      }
+      if (changed) msgSave();
+      renderMsgUI(); // 徽标反映活跃预警数：数据到达/变化都要刷新（快照无变化也不例外，否则刷新后徽标停在 0）
+    }
+
+    // 活跃余额预警：直接映射为常驻红色消息（不进历史记录）；最缺钱的排最前（原横幅口径）
+    function msgActiveAlerts() {
+      const list = Array.isArray(platformsCache) ? platformsCache : [];
+      const now = Date.now();
+      const rows = [];
+      for (const p of list) {
+        if (!msgIsLow(p)) continue;
+        const at = msgSnap.low[p.id] != null ? msgSnap.low[p.id]
+          : (p.last_query_at ? new Date(p.last_query_at).getTime() : now);
+        rows.push({ id: p.id, name: displayNameOf(p), balance: p.latest_balance, at,
+          text: `余额 ${p.latest_balance}${p.currency}（低于阈值 ${p.threshold}，需充值约 ${p.recharge_amount ?? 500}${p.currency}）` });
+      }
+      rows.sort((a, b) => (a.balance - b.balance) || (a.id - b.id));
+      return rows;
+    }
+
+    function msgFmtTime(ts) {
+      const d = new Date(ts);
+      const pad = (n) => String(n).padStart(2, '0');
+      return `${pad(d.getMonth() + 1)}-${pad(d.getDate())} ${pad(d.getHours())}:${pad(d.getMinutes())}:${pad(d.getSeconds())}`;
+    }
+    function msgRelTime(ts) {
+      const s = Math.max(0, Math.floor((Date.now() - ts) / 1000));
+      if (s < 60) return '刚刚';
+      if (s < 3600) return `${Math.floor(s / 60)} 分钟前`;
+      if (s < 86400) return `${Math.floor(s / 3600)} 小时前`;
+      return `${Math.floor(s / 86400)} 天前`;
+    }
+
+    function renderMsgUI() {
+      const cnt = document.querySelector('#msg-count');
+      if (cnt) {
+        const n = msgActiveAlerts().length + msgRecords.filter(m => !m.read).length;
+        cnt.textContent = n > 99 ? '99+' : String(n);
+        cnt.classList.toggle('hidden', n <= 0);
+      }
+      if (msgPanelOpen) renderMsgPanel();
+    }
+
+    function renderMsgPanel() {
+      const panel = document.querySelector('#msg-panel');
+      if (!panel) return;
+      const tagOf = { recover: '余额恢复', fail: '抓取失败', sess: '登录态' };
+      const rows = msgActiveAlerts().map((a) =>
+        `<div class="msg-row is-alert"><span class="msg-tag msg-alert">余额预警</span>` +
+        `<span class="msg-body"><b>${esc(a.name)}</b> ${esc(a.text)}</span>` +
+        `<span class="msg-time" title="${esc(msgRelTime(a.at))}">${msgFmtTime(a.at)}</span></div>`
+      ).join('') +
+      msgRecords.map((m) =>
+        `<div class="msg-row"><span class="msg-tag msg-normal">${tagOf[m.type] || '提醒'}</span>` +
+        `<span class="msg-body">${esc(m.name)} ${esc(m.text)}</span>` +
+        `<span class="msg-time" title="${esc(msgRelTime(m.at))}">${msgFmtTime(m.at)}</span></div>`
+      ).join('');
+      panel.innerHTML = (rows || '<div class="msg-empty">暂无消息</div>') +
+        `<div class="msg-foot"><button class="hdr-check" onclick="msgMarkRead(event)">全部已读</button>` +
+        `<button class="hdr-check" onclick="msgClear(event)">清空</button></div>`;
+    }
+
+    function toggleMsgPanel(e) {
+      if (e) e.stopPropagation();
+      const panel = document.querySelector('#msg-panel');
+      if (!panel) return;
+      msgPanelOpen = !msgPanelOpen;
+      panel.classList.toggle('hidden', !msgPanelOpen);
+      if (msgPanelOpen) {
+        for (const m of msgRecords) if (!m.read) m.read = true; // 打开即全部已读
+        msgSave();
+        renderMsgPanel();
+      }
+      renderMsgUI();
+    }
+
+    // 点击铃铛/面板以外区域自动收起
+    document.addEventListener('click', (e) => {
+      if (!msgPanelOpen) return;
+      const wrap = document.querySelector('.msg-wrap');
+      if (wrap && !wrap.contains(e.target)) {
+        msgPanelOpen = false;
+        const panel = document.querySelector('#msg-panel');
+        if (panel) panel.classList.add('hidden');
+      }
+    });
+
+    function msgMarkRead(e) {
+      if (e) e.stopPropagation();
+      let dirty = false;
+      for (const m of msgRecords) { if (!m.read) { m.read = true; dirty = true; } }
+      if (dirty) { msgSave(); renderMsgUI(); }
+    }
+
+    // 清空：只清历史事件；活跃预警仍按实时数据常驻（首次出现时间快照保留，不重置计时）
+    function msgClear(e) {
+      if (e) e.stopPropagation();
+      msgRecords = [];
+      msgSave();
+      renderMsgUI();
+    }
+
+    // ===== 平台健康度摘要条（第一层检测）=====
+    // 边界（2026-11-26 计划锁定）：只用页面已加载的数据做规则判断——不发额外请求、
+    // 不探测平台站点、不触发登录。数据源：platformsCache（/api/platforms，60 秒刷新）
+    // + carrierSessions（/api/carriers/session，10 秒刷新）。
+    // 分工：低余额在页头消息中心常驻（红色消息），这里只报链路健康。
+    // 口径：运营商登录态直接复用后端会话 state（与表格倒计时同口径）；
+    //       查询失败用 latest_error / last_query_status（与表格「抓取失败」徽章同口径）。
+    const HEALTH_STALE_MS = 2 * 60 * 60 * 1000; // 巡检周期 1 小时 × 2，超过视为「久未查成」
+    let platformsReachable = null; // null=还没拉过；true/false=最近一次 /api/platforms 成败
+    let healthEverDone = false;
+    let healthPanelOpen = false;
+    let healthLastCheckAt = null;
+    let healthAllBusy = false;
+    const healthBusy = new Set(); // 单平台检测中的 id
+
+    function collectHealthIssues(now) {
+      const issues = [];
+      const list = Array.isArray(platformsCache) ? platformsCache : [];
+      const sessionBad = new Set(); // 登录态已坏的运营商：其查询失败不必重复报
+      // ① 运营商登录态（复用后端会话 state：expired / expiring / uncalibrated / 正常）
+      for (const p of list) {
+        if (!isCarrier(p.provider)) continue;
+        const s = carrierSessions[p.id];
+        if (!s) { issues.push({ level:'bad', id:p.id, name:displayNameOf(p), why:'无登录态记录（尚未登录）', act:'login' }); sessionBad.add(p.id); continue; }
+        const expired = s.state === 'expired' || (s.expiresAt && s.expiresAt <= now);
+        if (expired) { issues.push({ level:'bad', id:p.id, name:displayNameOf(p), why:'登录态已过期，需重新登录', act:'login' }); sessionBad.add(p.id); continue; }
+        if (s.state === 'expiring') { issues.push({ level:'warn', id:p.id, name:displayNameOf(p), why:'登录态即将失效，请重新登录', act:'login' }); continue; }
+        if (s.state === 'uncalibrated' || !s.expiresAt) {
+          if (s.renewable === false) { issues.push({ level:'bad', id:p.id, name:displayNameOf(p), why:'登录态未标定且不可续期，需重新登录', act:'login' }); sessionBad.add(p.id); }
+          else issues.push({ level:'warn', id:p.id, name:displayNameOf(p), why:'登录态存活时间未标定', act:null });
+        }
+      }
+      // ② 查询链路（手动录入 / 明确关自动的实例不参与新鲜度判断）
+      for (const p of list) {
+        if (p.balance_type === 'manual' || p.query_auto === false) continue;
+        if (sessionBad.has(p.id)) continue; // 登录态坏了导致的失败已在①里报过
+        if (p.latest_error || p.query_failed || p.last_query_status === 'fail') {
+          issues.push({ level:'bad', id:p.id, name:displayNameOf(p), why:'最后一次余额查询失败', act:'refresh' }); continue;
+        }
+        if (p.last_query_at) {
+          if (now - new Date(p.last_query_at).getTime() > HEALTH_STALE_MS) issues.push({ level:'warn', id:p.id, name:displayNameOf(p), why:'超过 2 小时未成功查询', act:'refresh' });
+        } else if (!p.last_query_status) {
+          issues.push({ level:'warn', id:p.id, name:displayNameOf(p), why:'尚未执行过余额查询', act:null });
+        }
+      }
+      return issues;
+    }
+
+    function renderHealthBar() {
+      const text = document.querySelector('#health-badge-text');
+      const badge = document.querySelector('#health-badge');
+      if (!text || !badge) return;
+      if (platformsReachable === null && !healthEverDone) return; // 首轮数据未到，维持「检测中」
+      healthEverDone = true;
+      const now = Date.now();
+      if (platformsReachable === false) {
+        badge.className = 'hdr-badge health-bad' + (healthPanelOpen ? ' open' : '');
+        text.innerHTML = '<b>⛔ 平台健康：服务不可达</b>';
+        renderHealthPanel(null);
+        return;
+      }
+      const issues = collectHealthIssues(now);
+      const total = Array.isArray(platformsCache) ? platformsCache.length : 0;
+      const bad = issues.filter(i => i.level === 'bad').length;
+      const warn = issues.length - bad;
+      badge.className = 'hdr-badge ' + (bad ? 'health-bad' : (warn ? 'health-warn' : 'health-ok')) + (healthPanelOpen ? ' open' : '');
+      if (!issues.length) {
+        text.innerHTML = `<b>✅ 平台健康：${total}/${total} 正常</b>`;
+      } else {
+        const parts = [];
+        if (bad) parts.push(`${bad} 项异常`);
+        if (warn) parts.push(`${warn} 项待关注`);
+        text.innerHTML = `<b>⚠️ 平台健康：${parts.join(' · ')}</b>`;
+      }
+      renderHealthPanel(issues);
+    }
+
+    // 下拉面板渲染：仅在下拉展开时重绘（issues=null 表示服务不可达）
+    function renderHealthPanel(issues) {
+      const panel = document.querySelector('#health-panel');
+      if (!panel || !healthPanelOpen) return;
+      const list = Array.isArray(platformsCache) ? platformsCache : [];
+      if (!issues) {
+        panel.innerHTML = '<div class="hdr-row"><span class="hdr-name">服务</span><span class="hdr-dot bad"></span><span class="hdr-why">平台列表接口不可达——60 秒后自动重试</span></div>';
+        return;
+      }
+      const byId = new Map();
+      for (const i of issues) { if (!byId.has(i.id)) byId.set(i.id, []); byId.get(i.id).push(i); }
+      const dotOf = (arr) => arr.some(i => i.level === 'bad') ? 'bad' : 'warn';
+      const rows = list.map((p) => {
+        const arr = byId.get(p.id) || [];
+        const dot = arr.length ? dotOf(arr) : 'ok';
+        const why = arr.length ? arr.map(i => i.why).join('；') : '正常';
+        const busy = healthAllBusy || healthBusy.has(p.id);
+        const btn = busy ? '<button class="hdr-check loading">检测中…</button>'
+                         : `<button class="hdr-check" onclick="healthCheckOne(${p.id}, event)">检测</button>`;
+        return `<div class="hdr-row"><span class="hdr-name">${iconFor(p)}${esc(displayNameOf(p))}</span><span class="hdr-dot ${dot}"></span><span class="hdr-why">${esc(why)}</span>${btn}</div>`;
+      }).join('');
+      let time = '—';
+      if (healthLastCheckAt) {
+        const d = new Date(healthLastCheckAt);
+        const pad = (n) => String(n).padStart(2, '0');
+        time = `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())} ${pad(d.getHours())}:${pad(d.getMinutes())}:${pad(d.getSeconds())}`;
+      }
+      panel.innerHTML = rows +
+        `<div class="hdr-foot"><span>最近检测：${time}</span>` +
+        (healthAllBusy ? '<span class="hdr-check loading">全量检测中…</span>'
+                       : '<button class="hdr-check" onclick="healthRefreshAll(event)">重新检测全部</button>') +
+        '</div>';
+    }
+
+    function toggleHealthPanel(e) {
+      if (e) e.stopPropagation();
+      const panel = document.querySelector('#health-panel');
+      const badge = document.querySelector('#health-badge');
+      if (!panel || !badge) return;
+      healthPanelOpen = !healthPanelOpen;
+      panel.classList.toggle('hidden', !healthPanelOpen);
+      badge.classList.toggle('open', healthPanelOpen);
+      if (healthPanelOpen && healthEverDone) renderHealthBar(); // 打开时重算一次，保证明细与最新数据一致
+    }
+
+    // 点击徽标/面板以外区域自动收起
+    document.addEventListener('click', (e) => {
+      if (!healthPanelOpen) return;
+      const wrap = document.querySelector('.hdr-health');
+      if (wrap && !wrap.contains(e.target)) {
+        healthPanelOpen = false;
+        const panel = document.querySelector('#health-panel');
+        const badge = document.querySelector('#health-badge');
+        if (panel) panel.classList.add('hidden');
+        if (badge) badge.classList.remove('open');
+      }
+    });
+
+    // 全量重测：重拉平台列表与运营商登录态（只读 GET，零弹窗、不触发登录/余额查询），
+    // 成功后由 loadPlatforms/loadCarrierSessions 内的既有钩子自动重算
+    async function healthRefreshAll(e) {
+      if (e) e.stopPropagation();
+      if (healthAllBusy) return;
+      const btn = document.querySelector('#health-refresh-btn');
+      healthAllBusy = true;
+      if (btn) btn.classList.add('loading');
+      renderHealthBar();
+      try {
+        await loadPlatforms();
+        await loadCarrierSessions();
+        healthLastCheckAt = Date.now();
+      } catch (err) { /* loadPlatforms 失败已置 platformsReachable=false，渲染走「服务不可达」 */ }
+      finally {
+        healthAllBusy = false;
+        if (btn) btn.classList.remove('loading');
+        renderHealthBar();
+      }
+    }
+
+    // 单平台重测：重拉只读数据后重算，行内容随渲染原地更新（同样零弹窗）
+    async function healthCheckOne(id, e) {
+      if (e) e.stopPropagation();
+      if (healthAllBusy || healthBusy.has(id)) return;
+      healthBusy.add(id);
+      renderHealthBar();
+      try {
+        await loadPlatforms();
+        const p = (platformsCache || []).find(x => x.id === id);
+        if (p && isCarrier(p.provider)) await loadCarrierSessions();
+        healthLastCheckAt = Date.now();
+      } catch (err) { /* 失败路径由「服务不可达」呈现 */ }
+      finally {
+        healthBusy.delete(id);
+        renderHealthBar();
+      }
+    }
+
     // 平台附加货币次行：extra_json.remainPoint（RunningHub 积分，另一种货币），仅展示不参与预警
     function pointsLine(p) {
       if (!p || !p.extra_json) return '';
@@ -859,27 +1550,37 @@
       return `<div class="pts-line">积分 <b>${Number(pt)}</b></div>`;
     }
 
+    // 编辑期间锁定表格几何：table-layout:fixed + 按实测列宽的 colgroup + 表格总宽钉死实测值。
+    // fixed 布局下列宽完全由 colgroup 决定、总宽由 style.width 钉死，任何内容（含输入框）都无法影响布局——
+    // 此前只钉 td 宽度：自动布局下单元格最小内容宽度仍能突破指定宽导致 +47px 膨胀；
+    // 更早只按百分比生成 colgroup：没钉总宽导致塌缩到 100% 容器宽。两版败因都已修（2026-11-27 用户要求零膨胀）。
+    function syncEditColgroup() {
+      const tbl = document.querySelector('#platform-table');
+      if (!tbl) return;
+      let cg = tbl.querySelector('colgroup');
+      if (inlineEditId != null && inlineEditWidths && inlineEditWidths.length) {
+        if (!cg) { cg = document.createElement('colgroup'); tbl.insertBefore(cg, tbl.firstChild); }
+        const total = inlineEditWidths.reduce((a, b) => a + b, 0);
+        cg.innerHTML = inlineEditWidths.map((w) => `<col style="width:${w.toFixed(2)}px">`).join('');
+        tbl.style.tableLayout = 'fixed';
+        tbl.style.width = total.toFixed(2) + 'px';
+      } else if (cg) {
+        cg.remove();
+        tbl.style.tableLayout = '';
+        tbl.style.width = '';
+      }
+    }
     function renderPlatforms() {
       const list = platformsCache;
+      syncEditColgroup();
       // 有浏览器抓取型平台（含三大运营商网厅抓取）时显示"全部一键登录"按钮
       const loginAllBtn = document.querySelector('#login-all-btn');
       if (loginAllBtn) {
         const hasScrape = list.some(p => p.balance_type === 'scrape' || p.balance_type === 'api_scrape' || isCarrier(p.provider));
         loginAllBtn.style.display = hasScrape ? '' : 'none';
       }
-      // 低于阈值的平台：顶部红色预警横幅 + 表格行红色高亮（按余额从低到高排序，最缺钱的排最前）
-      const low = list
-        .filter(p => p.latest_balance != null && p.latest_balance < (p.threshold ?? 200))
-        .sort((a, b) => (a.latest_balance - b.latest_balance) || (a.id - b.id));
-      const alertBar = document.querySelector('#alert-bar');
-      if (low.length) {
-        alertBar.innerHTML = `<b>⚠️ 余额预警：</b><br>${low.map(p =>
-          `<b>${esc(p.name)}</b> 余额 ${p.latest_balance}${esc(p.currency)}（低于阈值 ${p.threshold}，需充值约 ${(p.recharge_amount ?? 500)}${esc(p.currency)}）`
-        ).join('<br>')}`;
-        alertBar.classList.remove('hidden');
-      } else {
-        alertBar.classList.add('hidden');
-      }
+      // 余额预警已并入页头消息中心：红色消息常驻 + 首次出现时间（msgDerive 推导）；表格行红色高亮按下方每行 isLow 判断
+      msgDerive();
       const pages = Math.max(1, Math.ceil(list.length / PLATFORMS_PAGE_SIZE));
       if (platformsPage > pages) platformsPage = pages;
       const start = (platformsPage - 1) * PLATFORMS_PAGE_SIZE;
@@ -887,22 +1588,63 @@
       const tbody = document.querySelector('#platform-table tbody');
       tbody.innerHTML = pageList.map(p => {
         const isLow = p.latest_balance != null && p.latest_balance < (p.threshold ?? 200);
+        // 余额手动录入（原「录入余额」按钮已并入行内编辑态 2026-11-27）：
+        // 编辑态里「余额」仅在 自动查询失效 或 手动录入模式 时可编辑；自动链路正常时保持徽章只读。
+        // api_scrape 内部就是「官方接口失败→自动试抓取」全链路都挂才报 fail，天然等于两者都失效。
+        const manualType = p.balance_type === 'manual';
+        const autoFailed = !!(p.query_failed || p.latest_error || p.last_query_status === 'fail');
+        const balEditable = manualType || autoFailed;
+        if (inlineEditId === p.id) {
+          // 行内编辑态：平台/名称/单位/阈值/充值金额直接在此行修改
+          // 列宽钉死：所有单元格按进入编辑前实测宽度渲染（td 宽度=该列下限），
+          // 输入框绝对定位于单元格内、脱离文档流——输入框固有宽度无法参与列宽计算，
+          // 编辑行对列宽的贡献与普通态完全一致（此前输入框曾把列撑宽、整表膨胀）。
+          const iw = (i) => inlineEditWidths && inlineEditWidths[i] != null ? ` style="width:${Math.round(inlineEditWidths[i])}px"` : '';
+          const ipx = (i) => inlineEditWidths && inlineEditWidths[i] != null ? Math.max(44, Math.round(inlineEditWidths[i]) - 24) : null;
+          return `
+        <tr class="inline-editing${isLow ? ' low-balance' : ''}"${inlineEditRowH ? ` style="height:${Math.round(inlineEditRowH)}px"` : ''}>
+          <td${iw(0)} class="ie-cell">${inlineEditRowH ? '' : '<div style="height:64px"></div>'}<input id="ie-label-${p.id}" class="ie-input ie-abs"${ipx(0) != null ? ` style="left:12px; top:50%; transform:translateY(-50%); width:${ipx(0)}px; height:29px"` : ''} value="${esc(p.label || '')}" placeholder="名称（大字显示，留空=平台名）"></td>
+          <td${iw(1)}>${providerLabel(p)}</td>
+          <td${iw(2)} class="ie-cell">${balEditable
+            ? `<div style="height:29px"></div><input id="ie-balance-${p.id}" class="ie-num ie-abs"${ipx(2) != null ? ` style="left:12px; top:50%; transform:translateY(-50%); width:${ipx(2)}px; height:29px"` : ''} type="number" min="0" step="any" value="${p.latest_balance ?? ''}" placeholder="余额" title="API/抓取均已失效，可手动录入余额">`
+            : balanceBadge(p.latest_balance, p.threshold)}</td>
+          <td${iw(3)} class="ie-cell"><div style="height:29px"></div><input id="ie-unit-${p.id}" class="ie-input ie-abs"${ipx(3) != null ? ` style="left:12px; top:50%; transform:translateY(-50%); width:${ipx(3)}px; height:29px"` : ''} value="${esc(p.currency || '')}" placeholder="CNY"></td>
+          <td${iw(4)} class="ie-cell"><div style="height:29px"></div><input id="ie-threshold-${p.id}" class="ie-num ie-abs"${ipx(4) != null ? ` style="left:12px; top:50%; transform:translateY(-50%); width:${ipx(4)}px; height:29px"` : ''} type="number" min="0" value="${p.threshold ?? 200}"></td>
+          <td${iw(5)} class="ie-cell"><div style="height:29px"></div><input id="ie-recharge-${p.id}" class="ie-num ie-abs"${ipx(5) != null ? ` style="left:12px; top:50%; transform:translateY(-50%); width:${ipx(5)}px; height:29px"` : ''} type="number" min="0" value="${p.recharge_amount ?? 500}"></td>
+          <td${iw(6)}>${lastQueryCell(p)}</td>
+          <td${iw(7)}>${p.latest_error ? '<span class="badge err">抓取失败</span>' : (p.active ? '<span class="badge ok">启用</span>' : '<span class="badge err">停用</span>')}</td>
+          <td${iw(8)} class="row-actions"><div class="btns">
+            <!-- 隐藏占位（与普通行「登录」按钮同宽——登录按钮现常驻「登录中」占位宽，
+                 故占位文字也取「登录中」，两者逐字同宽）：普通行 4 槽（登录中/刷新中/编辑/删除），
+                 编辑态 4 槽（登录占位/保存/取消/更多，保存按「刷新中」占位见 res-wide），
+                 四槽总宽相等，「更多」右缘恒等于普通行「删除」按钮右缘（2026-11-27 用户指正的
+                 对齐要求；按钮宽度按加载态常驻占位为同日新增要求） -->
+            <button class="primary" style="visibility:hidden" tabindex="-1" aria-hidden="true">登录中</button>
+            <button class="primary res-wide" onclick="saveInlineEdit(${p.id})">保存</button>
+            <button onclick="cancelInlineEdit()">取消</button>
+            <button onclick="editPlatform(${p.id})" title="密钥、URL、余额类型等复杂字段在此修改">更多</button>
+          </div></td>
+        </tr>
+      `;
+        }
         return `
-        <tr${isLow ? ' class="low-balance"' : ''}>
-          <td><span class="pname">${iconFor(p)}<b>${esc(p.name)}</b></span>${sameAccountLine(p, list)}${isCarrier(p.provider) ? `<div class="sess-box" data-pid="${p.id}"></div>` : ''}</td>
+        <tr data-id="${p.id}"${isLow ? ' class="low-balance"' : ''}>
+          <td><div class="inst-name">${esc(p.label || p.name)}</div><div class="inst-sub">${iconFor(p)}${p.label ? `<span>${esc(p.name)}</span>` : ''}${typeBadgeOf(p)}</div>${sameAccountLine(p, list)}${isCarrier(p.provider) ? `<div class="sess-box" data-pid="${p.id}"></div>` : ''}</td>
           <td>${providerLabel(p)}</td>
-          <td id="bal-cell-${p.id}">${balanceBadge(p.latest_balance, p.threshold)} ${esc(p.currency)}${pointsLine(p)}${balanceSourceLine(p)}</td>
+          <td id="bal-cell-${p.id}">${balanceBadge(p.latest_balance, p.threshold)}${pointsLine(p)}</td>
+          <td>${esc(p.currency || '—')}</td>
           <td>${p.threshold}</td>
           <td>${p.recharge_amount}</td>
           <td>${lastQueryCell(p)}</td>
           <td>${p.latest_error ? `<span class="badge err" title="${esc(p.latest_error)}">抓取失败</span>` : (p.active ? '<span class="badge ok">启用</span>' : '<span class="badge err">停用</span>')}</td>
-          <td class="row-actions">
-            ${(p.balance_type === 'scrape' || p.balance_type === 'api_scrape' || isCarrier(p.provider)) ? `<button class="primary" onclick="openLogin(${p.id})" id="login-btn-${p.id}">登录</button>` : ''}
-            <button id="refresh-btn-${p.id}" onclick="refreshOne(${p.id})">刷新余额</button>
-            <button onclick="inputBalance(${p.id})">录入余额</button>
-            <button onclick="editPlatform(${p.id})">编辑</button>
+          <td class="row-actions"><div class="btns">
+            ${(p.balance_type === 'scrape' || p.balance_type === 'api_scrape' || isCarrier(p.provider))
+              ? `<button class="primary" onclick="openLogin(${p.id})" id="login-btn-${p.id}">登录</button>`
+              : `<button class="primary" style="visibility:hidden" tabindex="-1" aria-hidden="true">登录中</button>`}
+            <button id="refresh-btn-${p.id}" onclick="refreshOne(${p.id})">刷新</button>
+            <button onclick="startInlineEdit(${p.id})">编辑</button>
             <button class="danger" onclick="delPlatform(${p.id})">删除</button>
-          </td>
+          </div></td>
         </tr>
       `;
       }).join('');
@@ -912,6 +1654,71 @@
         <button onclick="platformsPage--;renderPlatforms()" ${platformsPage <= 1 ? 'disabled' : ''}>上一页</button>
         <button onclick="platformsPage++;renderPlatforms()" ${platformsPage >= pages ? 'disabled' : ''}>下一页</button>
       `;
+    }
+
+    // ===== 实例显示名与行内编辑 =====
+    // 显示名：填了「名称」（label）显示「平台 · 名称」，没填就显示平台名。
+    // 消息中心/健康面板统一用它，多实例一眼可分（充值提醒的显示名在服务端 SQL 里拼接）。
+    function displayNameOf(p) {
+      return p && p.label ? `${p.name} · ${p.label}` : (p ? p.name : '');
+    }
+
+    // 实例类型徽章（首列小字行）：API=官方接口型（api_scrape 主路径也是官方接口，失败才回退抓取），
+    // SCRAPE=浏览器抓取型，手动=手动录入型（无自动查询）。图1 色样：API 琥珀棕、SCRAPE 石板灰蓝。
+    function typeBadgeOf(p) {
+      const t = p.balance_type || 'api';
+      if (t === 'manual') return '<span class="type-badge t-manual" title="手动录入：余额手动登记，无自动查询">手动</span>';
+      if (t === 'scrape') return '<span class="type-badge t-scrape" title="SCRAPE：浏览器抓取型，登录网厅后自动抓取">SCRAPE</span>';
+      return `<span class="type-badge t-api" title="API：官方接口型${t === 'api_scrape' ? '（官方接口优先，失败自动回退浏览器抓取）' : ''}">API</span>`;
+    }
+    // 行内编辑：常用字段（名称/余额/单位/阈值/充值金额）直接在行内改，保存走 PUT/POST 更新接口；
+    // 密钥、URL、余额类型等复杂字段仍走表单卡片（行内「更多」入口）。
+    let inlineEditId = null;
+    let inlineEditWidths = null; // 进入编辑前实测的各列宽度，编辑行按它钉死列宽（表格不膨胀）
+    let inlineEditRowH = null; // 进入编辑前实测的行高，编辑行按它钉死（行高不拉伸：64px 死占位+单元格内边距曾拉高约21px，2026-11-27）
+    function startInlineEdit(id) {
+      const tr = document.querySelector(`#platform-table tbody tr[data-id="${id}"]`);
+      inlineEditWidths = tr ? Array.from(tr.children).map((td) => td.getBoundingClientRect().width) : null;
+      inlineEditRowH = tr ? tr.getBoundingClientRect().height : null;
+      inlineEditId = id;
+      renderPlatforms();
+    }
+    function cancelInlineEdit() {
+      inlineEditId = null;
+      inlineEditWidths = null;
+      inlineEditRowH = null;
+      renderPlatforms();
+    }
+    async function saveInlineEdit(id) {
+      // 编辑态不再提供平台名输入框（平台名固定不可改），从缓存取原值回传
+      const curP = platformsCache.find(x => x.id === id);
+      const name = curP ? curP.name : '';
+      const label = document.querySelector(`#ie-label-${id}`).value.trim();
+      const currency = document.querySelector(`#ie-unit-${id}`).value.trim().toUpperCase();
+      const threshold = parseFloat(document.querySelector(`#ie-threshold-${id}`).value);
+      const recharge = parseFloat(document.querySelector(`#ie-recharge-${id}`).value);
+      // 「余额」输入框仅在该平台 API/抓取均失效（或手动录入模式）时渲染；无输入框 = 自动链路正常，余额只读不参与保存
+      const balInput = document.querySelector(`#ie-balance-${id}`);
+      let manualBalance = null;
+      if (balInput && balInput.value.trim() !== '') {
+        manualBalance = parseFloat(balInput.value);
+        if (!Number.isFinite(manualBalance) || manualBalance < 0) { alert('余额必须是有效数值'); return; }
+      }
+      if (!name) { alert('平台名不能为空'); return; }
+      if (!Number.isFinite(threshold) || threshold < 0) { alert('阈值必须是有效数值'); return; }
+      if (!Number.isFinite(recharge) || recharge < 0) { alert('充值金额必须是有效数值'); return; }
+      if (currency.length > 10) { alert('单位请控制在 10 个字符内（如 CNY / USD）'); return; }
+      try {
+        await api(`/api/platforms/${id}`, { method: 'PUT', body: { name, label, threshold, recharge_amount: recharge, currency: currency || undefined } });
+        // 余额改动走原「录入余额」同款端点（服务端同步「最后查询=录入时刻」语义）；空值/同值不触发
+        if (manualBalance != null && manualBalance !== (curP ? curP.latest_balance : null)) {
+          await api(`/api/platforms/${id}/balance`, { method: 'POST', body: { balance: manualBalance } });
+        }
+        inlineEditId = null;
+        inlineEditWidths = null;
+        inlineEditRowH = null;
+        await loadPlatforms();
+      } catch (e) { alert('保存失败：' + (e.message || e)); }
     }
 
     // 充值提醒列表：前端分页，每页 10 条
@@ -938,12 +1745,12 @@
           <td class="muted">${esc(o.reason || '')}</td>
           <td class="muted">${esc(o.note || '')}</td>
           <td class="muted">${o.created_at}</td>
-          <td class="row-actions">
+          <td class="row-actions"><div class="btns">
             <button onclick="editNote(${o.id})">备注</button>
             ${o.status === 'pending' ? `<button onclick="notifyOrder(${o.id})">发送通知</button>` : ''}
             ${o.status === 'notified' ? `<button class="primary" onclick="markPaid(${o.id})">登记打款</button>` : ''}
             ${o.status === 'paid' ? `<button class="primary" onclick="tryCredit(${o.id})">检测到账</button> <button onclick="forceCredit(${o.id})">手动确认到账</button> <button onclick="unmarkPaid(${o.id})">撤销打款</button>` : ''}
-          </td>
+          </div></td>
         </tr>
       `).join('');
       const nav = document.querySelector('#order-pagination');
@@ -1066,10 +1873,10 @@
 
     async function refreshOne(id) {
       const btn = document.querySelector(`#refresh-btn-${id}`);
-      const label = btn ? btn.textContent : '刷新余额';
+      const label = btn ? btn.textContent : '刷新';
       const p = platformsCache.find(x => x.id === id);
       const name = p ? p.name : `平台#${id}`;
-      if (btn) { btn.disabled = true; btn.textContent = '刷新中…'; btn.classList.add('loading'); }
+      if (btn) { btn.disabled = true; btn.textContent = '刷新中'; btn.classList.add('loading'); }
       try {
         const r = await api(`/api/platforms/${id}/refresh`, { method:'POST' });
         await loadPlatforms();
@@ -1085,12 +1892,6 @@
         const b = document.querySelector(`#refresh-btn-${id}`);
         if (b) { b.disabled = false; b.textContent = label; b.classList.remove('loading'); }
       }
-    }
-    async function inputBalance(id) {
-      const v = prompt('输入当前余额：');
-      if (v == null) return;
-      await api(`/api/platforms/${id}/balance`, { method:'POST', body:{ balance: parseFloat(v) } });
-      loadPlatforms();
     }
     async function delPlatform(id) {
       if (!confirm('确认删除该平台？')) return;
@@ -1110,6 +1911,7 @@
       document.querySelector('#form-hint').classList.add('hidden');
       // 先重置所有字段为默认值，再计算字段可见性（避免残留上次模板的状态）
       document.querySelector('#f-name').value = '';
+      document.querySelector('#f-label').value = '';
       document.querySelector('#f-provider').value = 'generic';
       document.querySelector('#f-key').value = '';
       document.querySelector('#f-key-secret').value = '';
@@ -1124,15 +1926,57 @@
       document.querySelector('#f-threshold').value = '200';
       document.querySelector('#f-recharge').value = '500';
       document.querySelector('#f-target').value = '';
+      // 新建表单不提供 api_scrape / 运营商选项（创建入口规则 2026-11-27）；清除编辑态动态补回的选项
+      for (const sel of [document.querySelector('#f-balance-type'), document.querySelector('#f-provider')]) {
+        for (const opt of Array.from(sel.querySelectorAll('option[data-dynamic="1"]'))) opt.remove();
+      }
       applyFieldVisibility('generic');
       onBalanceTypeChange();
-      document.querySelector('#add-form').classList.remove('hidden');
+      document.querySelector('.field[data-field="name"]').style.display = ''; // 新建/快速添加：平台名必填，恢复显示（编辑态由 editPlatform 隐藏）
+      updateCreateGate();
+      openAddModal();
     }
     function hideAddForm(){
       lockedFields.clear(); pinnedFields.clear();
       setMoreOpen(false);
-      document.querySelector('#add-form').classList.add('hidden');
+      closeAddModal();
     }
+
+    // 浮层开关（2026-11-27）：添加/编辑表单从就地展开改为第一层弹出浮层（遮罩+居中卡片）。
+    // open：显示遮罩、锁背景滚动、挂 Esc（先摘后挂防重复绑定）、焦点落第一个可见输入控件。
+    // close：还原背景滚动与 Esc 监听。onModalMaskClick 只响应点在遮罩空白上的点击（卡片内冒泡不关闭）。
+    function addModalEsc(e){ if (e.key === 'Escape') hideAddForm(); }
+    function openAddModal(){
+      document.querySelector('#add-form-mask').classList.remove('hidden');
+      document.body.style.overflow = 'hidden';
+      document.removeEventListener('keydown', addModalEsc);
+      document.addEventListener('keydown', addModalEsc);
+      const firstInput = Array.from(document.querySelectorAll('#add-form input, #add-form select')).find(el => el.offsetParent !== null);
+      if (firstInput) firstInput.focus();
+    }
+    function closeAddModal(){
+      document.querySelector('#add-form-mask').classList.add('hidden');
+      document.body.style.overflow = '';
+      document.removeEventListener('keydown', addModalEsc);
+    }
+    function onModalMaskClick(e){ if (e.target === e.currentTarget) hideAddForm(); }
+
+    // 创建按钮门控（2026-11-27 创建入口规则）：新建时 API 接口型未填 Key → 保存按钮置灰；
+    // 编辑既有实例不设限；抓取/手动类型不设 Key 门禁（抓取型的登录门禁在极简浮层）。
+    function updateCreateGate() {
+      const btn = document.querySelector('#form-save-btn');
+      if (!btn) return;
+      if (editingId != null) { btn.disabled = false; btn.title = ''; return; }
+      const type = document.querySelector('#f-balance-type').value;
+      const provider = document.querySelector('#f-provider').value;
+      const needsKey = (type === 'api') && !String(provider || '').startsWith('carrier_');
+      const missing = needsKey && !val('#f-key').trim();
+      btn.disabled = missing;
+      btn.title = missing ? 'API 接口型必须填写 API Key 才能创建' : '';
+    }
+    document.querySelector('#add-form').addEventListener('input', updateCreateGate);
+    document.querySelector('#f-balance-type').addEventListener('change', updateCreateGate);
+    document.querySelector('#f-provider').addEventListener('change', updateCreateGate);
 
     let editingId = null;
     async function editPlatform(id) {
@@ -1140,13 +1984,34 @@
       editingId = id;
       // 编辑时不带分组键：避免把已有的 same_account_note 清空
       pendingSameAccount = null;
-      lockedFields.clear(); pinnedFields.clear(); // 编辑表单：Provider/余额类型进折叠区，改阈值/币种先展开
+      lockedFields.clear(); pinnedFields.clear(); // 编辑表单：Provider/余额类型进折叠区，改阈值先展开
       setMoreOpen(false);
       applyFieldState('provider');
       document.querySelector('#form-title').textContent = `编辑平台 #${id}`;
       document.querySelector('#form-hint').classList.add('hidden'); // 编辑时不显示快速添加模板提示
+      inlineEditId = null; // 行内编辑与表单卡片互斥：打开「更多」时退出行内编辑
       document.querySelector('#f-name').value = p.name || '';
+      document.querySelector('#f-label').value = p.label || '';
+      document.querySelector('#f-label').placeholder = '可选：区分同平台多实例，如 主力号；留空自动编号'; // 清掉新建流程残留的提示
       document.querySelector('#f-provider').value = p.provider || 'generic';
+      // 运营商/api_scrape 已从新建下拉移除（创建入口规则 2026-11-27）；
+      // 编辑既有实例时动态补回对应选项，避免 select 值落空导致保存时误清 provider/类型
+      const provSel = document.querySelector('#f-provider');
+      if (String(p.provider || '').startsWith('carrier_') && !provSel.querySelector(`option[value="${p.provider}"]`)) {
+        const opt = document.createElement('option');
+        opt.value = p.provider;
+        opt.textContent = `${p.provider}（运营商，仅既有实例）`;
+        opt.dataset.dynamic = '1';
+        provSel.appendChild(opt);
+      }
+      const typeSel = document.querySelector('#f-balance-type');
+      if (p.balance_type === 'api_scrape' && !typeSel.querySelector('option[value="api_scrape"]')) {
+        const opt2 = document.createElement('option');
+        opt2.value = 'api_scrape';
+        opt2.textContent = 'api_scrape（接口优先+抓取兜底，仅既有实例）';
+        opt2.dataset.dynamic = '1';
+        typeSel.appendChild(opt2);
+      }
       // 密钥字段：列表接口已掩码，编辑时不回填明文，留空表示保持不变
       document.querySelector('#f-key').value = '';
       document.querySelector('#f-key-secret').value = '';
@@ -1159,17 +2024,18 @@
       document.querySelector('#f-json-path').value = p.balance_json_path || '';
       document.querySelector('#f-api-url').value = p.api_url || '';
       document.querySelector('#f-api-json-path').value = p.api_json_path || '';
-      document.querySelector('#f-currency').value = p.currency || 'USD';
+      document.querySelector('#f-currency').value = p.currency || 'CNY';
       document.querySelector('#f-threshold').value = p.threshold ?? 200;
       document.querySelector('#f-recharge').value = p.recharge_amount ?? 500;
       document.querySelector('#f-target').value = p.target_amount ?? '';
-      document.querySelector('#add-form').classList.remove('hidden');
-      document.querySelector('#add-form').scrollIntoView({ behavior:'smooth' });
+      document.querySelector('.field[data-field="name"]').style.display = 'none'; // 编辑已有实例：平台名固定不可改，整字段隐藏
+      updateCreateGate();
+      openAddModal();
     }
 
     async function savePlatform() {
       const body = {
-        name: val('#f-name'), provider: val('#f-provider'), api_key: val('#f-key'),
+        name: val('#f-name'), label: val('#f-label'), provider: val('#f-provider'), api_key: val('#f-key'),
         api_key_secret: val('#f-key-secret'),
         balance_type: val('#f-balance-type'), balance_api_url: val('#f-balance-url'),
         balance_json_path: val('#f-json-path'),
@@ -1186,6 +2052,12 @@
         body.same_account_note = pendingSameAccount;
       }
       pendingSameAccount = null;
+      // 创建入口规则（2026-11-27）前端拦截：API 接口型必须填 API Key（服务端 400 兜底）
+      if (editingId == null && body.balance_type === 'api' && !String(body.provider || '').startsWith('carrier_') && !String(body.api_key || '').trim()) {
+        showToast('API 接口型必须填写 API Key 才能创建实例', 'info', 6000);
+        document.querySelector('#f-key').focus();
+        return;
+      }
       try {
         if (editingId != null) {
           await api(`/api/platforms/${editingId}`, { method:'PUT', body });
@@ -1230,7 +2102,7 @@
     // 一键登录：服务端拉起登录脚本弹出浏览器窗口
     async function openLogin(id) {
       const btn = document.querySelector(`#login-btn-${id}`);
-      if (btn) { btn.disabled = true; btn.textContent = '登录中...'; }
+      if (btn) { btn.disabled = true; btn.textContent = '登录中'; }
       try {
         const r = await api('/api/login/run', { method:'POST', body:{ platform: id } });
         alert(r.message || '登录窗口已打开');
@@ -1256,7 +2128,7 @@
     // 全部一键登录：一次拉起所有浏览器抓取型平台的登录流程
     async function openLoginAll() {
       const btn = document.querySelector('#login-all-btn');
-      if (btn) { btn.disabled = true; btn.textContent = '登录中...'; }
+      if (btn) { btn.disabled = true; btn.textContent = '登录中'; }
       try {
         const r = await api('/api/login/run', { method:'POST', body:{} });
         alert(r.message || '登录窗口已打开');
@@ -1291,7 +2163,7 @@
       if (!ids.length) { alert('没有需要重新登录的运营商实例'); return; }
       const names = ids.map(id => carrierSessions[id].name).join(' → ');
       if (!confirm('将按下面的顺序逐个弹出登录窗口（扫完一个自动弹下一个）：\n\n' + names + '\n\n确定开始吗？')) return;
-      if (btn) { btn.disabled = true; btn.textContent = '登录中...'; }
+      if (btn) { btn.disabled = true; btn.textContent = '登录中'; }
       try {
         const r = await api('/api/login/run', { method:'POST', body:{ platforms: ids } });
         alert(r.message || '登录窗口已打开');
@@ -1343,7 +2215,7 @@
         box.style.background = '#fef2f2';
         box.style.border = '1px solid #fecaca';
         box.style.color = '#991b1b';
-        box.innerHTML = `本次巡检：成功 ${okCount} 个，失败 ${errs.length} 个（${errs.map(e => esc(nameOf(e.platformId))).join('、')}）— 失败平台已标「抓取失败」，可点「刷新余额」重试；连续失败会自动手机提醒重新登录。`;
+        box.innerHTML = `本次巡检：成功 ${okCount} 个，失败 ${errs.length} 个（${errs.map(e => esc(nameOf(e.platformId))).join('、')}）— 失败平台已标「抓取失败」，可点「刷新」重试；连续失败会自动手机提醒重新登录。`;
         box.classList.remove('hidden');
       } else {
         box.style.background = '#f0fdf4';
@@ -1393,6 +2265,10 @@
 
     loadPlatforms();
     loadFund();
+    // 页头平台健康徽标：初始渲染（HTML 已含「检测中」初值，数据到达后由既有钩子自动重算）
+    renderHealthBar();
+    // 页头消息中心：读回 localStorage 历史（跨刷新保留），未读计数先行渲染
+    msgInit();
     setInterval(() => { loadPlatforms(); loadFund(); }, 60000);
     // 运营商登录态倒计时：本地每秒走秒，每 10 秒重新拉一次会话状态
     // （拉取是为了拿到保活/巡检续期后的新时间戳；走秒只是本地计算，不发请求）

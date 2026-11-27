@@ -248,6 +248,7 @@ try {
   // 失败也要更新时间（否则看不出「刚刚查过但失败」）
   const lqFailPlat = await api('POST', '/api/platforms', {
     name: '最后查询失败测试', provider: 'generic', balance_type: 'api',
+    api_key: 'sk-fail-test', // 创建入口规则 2026-11-27：API 型必须带 Key（假 key 不影响「不可达 URL 必失败」的语义）
     balance_api_url: 'http://127.0.0.1:9/never', balance_json_path: 'balance',
   });
   const lqFailId = lqFailPlat.json.id;
@@ -310,31 +311,67 @@ try {
   await api('DELETE', `/api/platforms/${saIdB}`);
   await api('DELETE', `/api/platforms/${saC.json.id}`);
 
-  // ===== 11. 同名平台冲突（快速添加模板重复点时会发生）=====
-  // 平台名有唯一约束。快速添加栏里已存在同名模板时，用户会直接撞上。
-  // 原始 SQLite 报错（UNIQUE constraint failed: platforms.name）对用户无意义，
-  // 接口必须返回可读提示并告诉用户去编辑已有实例。
+  // ===== 11. 实例名称模型（2026-11-27 修订：名称可选，留空自动「平台名+序号」编号）=====
+  // 唯一性=（平台名+名称）组合：同平台同名 → 409；不同平台之间名称可以重名。
   const dupName = '快速添加重复测试';
-  const dup1 = await api('POST', '/api/platforms', {
+  const dupBody = (label) => ({
     name: dupName, provider: 'generic', balance_type: 'manual',
     currency: 'CNY', threshold: 200, recharge_amount: 500,
+    ...(label ? { label } : {}),
   });
-  check('创建同名平台', dup1.ok && Number.isFinite(dup1.json?.id), `id=${dup1.json?.id}`);
-  const dup2 = await api('POST', '/api/platforms', {
-    name: dupName, provider: 'generic', balance_type: 'manual',
-    currency: 'CNY', threshold: 200, recharge_amount: 500,
+  const dup1 = await api('POST', '/api/platforms', dupBody());
+  check('第一个实例无名称 → 自动编号「平台名1」', dup1.ok && dup1.json?.label === `${dupName}1`, `label=${dup1.json?.label}`);
+  const dup2 = await api('POST', '/api/platforms', dupBody());
+  check('第二个实例无名称 → 自动编号「平台名2」', dup2.ok && dup2.json?.label === `${dupName}2`, `label=${dup2.json?.label}`);
+  const dup3 = await api('POST', '/api/platforms', dupBody('主力号'));
+  check('显式指定名称创建成功', dup3.ok && Number.isFinite(dup3.json?.id), `id=${dup3.json?.id}`);
+  const dup4 = await api('POST', '/api/platforms', dupBody('主力号'));
+  check('平台名+名称完全相同 → 409', dup4.status === 409, `status=${dup4.status}`);
+  check('409 错误提示可读（不是 SQLite 原文）',
+    typeof dup4.json?.error === 'string'
+    && dup4.json.error.includes(dupName)
+    && !dup4.json.error.includes('UNIQUE constraint'),
+    String(dup4.json?.error || '').slice(0, 80));
+  const dup5 = await api('POST', '/api/platforms', {
+    name: `${dupName}异平台`, provider: 'generic', balance_type: 'manual',
+    currency: 'CNY', threshold: 200, recharge_amount: 500, label: '主力号',
   });
-  check('重复创建同名平台被拒绝', dup2.status === 409, `status=${dup2.status}`);
-  check('同名冲突的错误提示可读（不是 SQLite 原文）',
-    typeof dup2.json?.error === 'string'
-    && dup2.json.error.includes(dupName)
-    && !dup2.json.error.includes('UNIQUE constraint'),
-    String(dup2.json?.error || '').slice(0, 80));
+  check('不同平台之间名称可以重名', dup5.ok && Number.isFinite(dup5.json?.id), `id=${dup5.json?.id}`);
   await api('DELETE', `/api/platforms/${dup1.json.id}`);
+  await api('DELETE', `/api/platforms/${dup2.json.id}`);
+  await api('DELETE', `/api/platforms/${dup3.json.id}`);
+  await api('DELETE', `/api/platforms/${dup5.json.id}`);
 
-  // ===== 11b. 抓取型一键创建（无密钥 + 重名加序号）=====
-  // 前端点抓取型模板直接按模板值建实例，不带任何密钥字段；
-  // 重名时前端自动生成「xx2」再建（同一运营商第二个账户，副卡场景）。
+  // ===== 11c. 创建入口规则（2026-11-27）：API 型必填 Key；登录态预检 =====
+  const ruleNoKey = await api('POST', '/api/platforms', {
+    name: 'TEST-入口规则', provider: 'generic', balance_type: 'api',
+    currency: 'CNY', threshold: 200, recharge_amount: 500,
+  });
+  check('API 接口型缺 API Key 创建被拒（400）', ruleNoKey.status === 400, `status=${ruleNoKey.status}`);
+  check('缺 Key 报错提示可读（含「API Key」）',
+    typeof ruleNoKey.json?.error === 'string' && ruleNoKey.json.error.includes('API Key'),
+    String(ruleNoKey.json?.error || '').slice(0, 60));
+  const ruleWithKey = await api('POST', '/api/platforms', {
+    name: 'TEST-入口规则', provider: 'generic', balance_type: 'api', api_key: 'sk-test',
+    currency: 'CNY', threshold: 200, recharge_amount: 500,
+  });
+  check('API 接口型带 Key 创建成功', ruleWithKey.ok && Number.isFinite(ruleWithKey.json?.id), `id=${ruleWithKey.json?.id}`);
+  const ruleScrape = await api('POST', '/api/platforms', {
+    name: 'TEST-入口规则抓取', provider: 'generic', balance_type: 'scrape',
+    currency: 'CNY', threshold: 200, recharge_amount: 500,
+  });
+  check('抓取型无 Key 可创建（登录门禁在前端浮层）', ruleScrape.ok && Number.isFinite(ruleScrape.json?.id), `id=${ruleScrape.json?.id}`);
+  const prev = await api('GET', `/api/login-state-preview?name=${encodeURIComponent('智谱')}&provider=zhipu`);
+  check('登录态预检：key 为非空字符串', typeof prev.json?.key === 'string' && prev.json.key.length > 0, `key=${prev.json?.key}`);
+  check('登录态预检：返回 exists/canonical 布尔字段',
+    typeof prev.json?.exists === 'boolean' && typeof prev.json?.canonical === 'boolean',
+    `exists=${prev.json?.exists} canonical=${prev.json?.canonical}`);
+  await api('DELETE', `/api/platforms/${ruleWithKey.json.id}`);
+  await api('DELETE', `/api/platforms/${ruleScrape.json.id}`);
+
+  // ===== 11b. 抓取型一键创建（无密钥 + 不同名称两个实例并存）=====
+  // 前端点抓取型模板（平台尚无实例时）直接按模板值建实例，不带任何密钥字段；
+  // 平台已有实例时前端改为打开「新建实例」表单（名称可选，留空自动编号），后端仍按请求体接受。
   // 这里验证后端接受这两种请求体，且两个同 provider 实例可以并存。
   const ocName = '一键创建冒烟抓取型';
   const ocBody = (n) => ({
@@ -344,7 +381,7 @@ try {
     currency: 'CNY', threshold: 200, recharge_amount: 500,
   });
   const oc1 = await api('POST', '/api/platforms', ocBody(ocName));
-  check('抓取型一键创建（无密钥字段）', oc1.ok && Number.isFinite(oc1.json?.id), `id=${oc1.json?.id}`);
+  check('抓取型一键创建（无密钥字段，无名称自动编号）', oc1.ok && oc1.json?.label === `${ocName}1`, `label=${oc1.json?.label}`);
   const oc2 = await api('POST', '/api/platforms', ocBody(`${ocName}2`));
   check('重名加序号可创建第二个实例（副卡场景）', oc2.ok && Number.isFinite(oc2.json?.id), `id=${oc2.json?.id}`);
   const ocList = (await api('GET', '/api/platforms')).json?.filter((p) => p.provider === 'yinchao');
@@ -355,6 +392,35 @@ try {
   // ===== 12. 收尾：测试数据清零 =====
   const fin = await api('GET', '/api/platforms');
   check('测试平台全部清理', Array.isArray(fin.json) && fin.json.length === 0, `len=${fin.json?.length}`);
+
+  // ===== 11d. 登录态隔离：规范名平台多实例按实例 id 独立派生登录态 key =====
+  {
+    const isoCandidates = [
+      ['MiniMax', 'minimax'], ['音潮', 'yinchao'], ['阿里云百炼', 'bailian'],
+      ['火山引擎', 'volc'], ['MIMO', 'mimo'], ['腾讯云', 'tencent'],
+    ];
+    const existingNames = new Set(((await api('GET', '/api/platforms')).json || []).map((p) => p.name));
+    const picked = isoCandidates.find(([n]) => !existingNames.has(n));
+    if (picked) {
+      const isoName = picked[0];
+      const isoBody = () => ({ name: isoName, provider: picked[1], balance_type: 'scrape', currency: 'CNY', threshold: 200, recharge_amount: 500 });
+      const ia = await api('POST', '/api/platforms', isoBody());
+      const ib = await api('POST', '/api/platforms', isoBody());
+      const ka = (await api('GET', `/api/platforms/${ia.json?.id}/login-state`)).json?.key;
+      const kb = (await api('GET', `/api/platforms/${ib.json?.id}/login-state`)).json?.key;
+      check('隔离：实例A登录态key带实例id', typeof ka === 'string' && ka.endsWith(`_${ia.json?.id}`), `key=${ka}`);
+      check('隔离：实例B登录态key独立不与A共用', typeof kb === 'string' && kb.endsWith(`_${ib.json?.id}`) && kb !== ka, `key=${kb}`);
+      const legacyKey = String(ka || '').replace(/_\d+$/, '');
+      const pv1 = await api('GET', `/api/login-state-preview?name=${encodeURIComponent(isoName)}&provider=${picked[1]}`);
+      check('隔离：已有实例时预检mode=postcreate且不亮绿灯', pv1.json?.mode === 'postcreate' && pv1.json?.exists === false, `mode=${pv1.json?.mode} exists=${pv1.json?.exists}`);
+      await api('DELETE', `/api/platforms/${ia.json?.id}`);
+      await api('DELETE', `/api/platforms/${ib.json?.id}`);
+      const pv2 = await api('GET', `/api/login-state-preview?name=${encodeURIComponent(isoName)}&provider=${picked[1]}`);
+      check('隔离：清理后预检mode=prelogin且key回到规范名', pv2.json?.mode === 'prelogin' && pv2.json?.key === legacyKey, `mode=${pv2.json?.mode} key=${pv2.json?.key}`);
+    } else {
+      check('隔离：存在无实例的规范名平台可作探针', false, '所有规范名平台均已有实例，用例跳过');
+    }
+  }
 
   exitCode = 0;
 } catch (err) {

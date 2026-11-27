@@ -36,7 +36,10 @@ export async function initSchema() {
   db.run(`
     CREATE TABLE IF NOT EXISTS platforms (
       id INTEGER PRIMARY KEY AUTOINCREMENT,
-      name TEXT NOT NULL UNIQUE,
+      -- 实例名称：同一平台可建多个实例（多账号/多密钥），空串=主实例。
+      -- 唯一性是（平台名+实例名称）组合，见建表末尾 UNIQUE(name, label)
+      name TEXT NOT NULL,
+      label TEXT NOT NULL DEFAULT '',
       provider TEXT NOT NULL,
       base_url TEXT,
       api_key TEXT,
@@ -67,7 +70,9 @@ export async function initSchema() {
       api_json_path TEXT,
       -- 最近一次余额的来源：'api'（官方接口）/ 'scrape'（浏览器抓取）/ 'manual'（手动录入）
       -- 界面上要如实告诉用户这个数是从哪来的，否则“没抓到但显示有余额”无法分辨
-      balance_source TEXT
+      balance_source TEXT,
+      -- 同一平台多实例：平台名+实例名称组合唯一
+      UNIQUE(name, label)
     );
 
     CREATE TABLE IF NOT EXISTS balance_history (
@@ -166,6 +171,62 @@ export async function initSchema() {
     // 迁移：最近一次余额的来源（api / scrape / manual）
     if (!eNames.includes('balance_source')) {
       db.run('ALTER TABLE platforms ADD COLUMN balance_source TEXT');
+    }
+  } catch {}
+
+  // 迁移：支持同平台多实例 —— 唯一约束从「name 单列」改为「(name, label) 组合」。
+  // UNIQUE 约束无法用 ALTER 修改，SQLite 标准做法是整表重建（旧表改名→建新表→拷数据→删旧表）。
+  // 触发条件：库里已有 platforms 表但没有 label 列（旧 schema）。拷贝时 label 全部置空串=主实例，
+  // 行 id 保持不变，余额历史/充值单的外键引用不受影响。旧库的各 ALTER 迁移列在此块之前已补齐。
+  // 幂等：label 列已存在（新库或已迁移过）则整块跳过。
+  try {
+    const mCols = db.exec('PRAGMA table_info(platforms)');
+    const mNames = mCols.length ? mCols[0].values.map((r) => r[1]) : [];
+    if (mNames.length && !mNames.includes('label')) {
+      db.run('ALTER TABLE platforms RENAME TO platforms_old_migrate');
+      db.run(`
+        CREATE TABLE platforms (
+          id INTEGER PRIMARY KEY AUTOINCREMENT,
+          name TEXT NOT NULL,
+          label TEXT NOT NULL DEFAULT '',
+          provider TEXT NOT NULL,
+          base_url TEXT,
+          api_key TEXT,
+          api_key_secret TEXT,
+          balance_type TEXT DEFAULT 'api',
+          balance_api_url TEXT,
+          balance_json_path TEXT,
+          currency TEXT DEFAULT 'USD',
+          threshold REAL DEFAULT 200,
+          recharge_amount REAL DEFAULT 500,
+          target_amount REAL,
+          active INTEGER DEFAULT 1,
+          created_at TEXT DEFAULT (datetime('now','localtime')),
+          updated_at TEXT DEFAULT (datetime('now','localtime')),
+          last_query_at TEXT,
+          last_query_status TEXT,
+          last_success_at TEXT,
+          latest_error TEXT,
+          extra_json TEXT,
+          same_account_note TEXT,
+          api_url TEXT,
+          api_json_path TEXT,
+          balance_source TEXT,
+          UNIQUE(name, label)
+        )
+      `);
+      db.run(`
+        INSERT INTO platforms (id, name, label, provider, base_url, api_key, api_key_secret, balance_type,
+          balance_api_url, balance_json_path, currency, threshold, recharge_amount, target_amount, active,
+          created_at, updated_at, last_query_at, last_query_status, last_success_at, latest_error, extra_json,
+          same_account_note, api_url, api_json_path, balance_source)
+        SELECT id, name, '', provider, base_url, api_key, api_key_secret, balance_type,
+          balance_api_url, balance_json_path, currency, threshold, recharge_amount, target_amount, active,
+          created_at, updated_at, last_query_at, last_query_status, last_success_at, latest_error, extra_json,
+          same_account_note, api_url, api_json_path, balance_source
+        FROM platforms_old_migrate
+      `);
+      db.run('DROP TABLE platforms_old_migrate');
     }
   } catch {}
 

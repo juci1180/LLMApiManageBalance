@@ -85,11 +85,11 @@ function shouldSkipInAuto(platform) {
   if (!String(platform.provider || '').startsWith('carrier_')) return null;
   // 站点级拦无头的网厅（电信 189.cn）：自动巡检用无头抓必然拿不到内容（正文 0 字），
   // 会被当成「页面已无登录标识」→ 误判成未登录，把用户刚扫码登上的会话又标成失效。
-  // 所以自动巡检不碰这类平台：只允许手动点「刷新余额」（手动来源走有头窗口）。
+  // 所以自动巡检不碰这类平台：只允许手动点「刷新」（手动来源走有头窗口）。
   // 规则与抓取路径同源（effectiveScrapeRule），避免两处口径不一致。
   const rule = effectiveScrapeRule(platform);
   if (rule?.headlessBlocked === true && !autoHeadedAllowed()) {
-    return '该网厅只接受可见窗口（站点拦截无头浏览器），自动巡检不抓取，请手动点「刷新余额」';
+    return '该网厅只接受可见窗口（站点拦截无头浏览器），自动巡检不抓取，请手动点「刷新」';
   }
   if (!autoSkipLoggedOut()) return null;
   const storageFile = storageFileFor(platform.name, platform.provider, platform.id);
@@ -114,7 +114,7 @@ export async function runMonitorCycle({ trigger = 'auto' } = {}) {
       const slice = platforms.slice(i, i + BATCH);
       await Promise.all(slice.map(async (p) => {
         // 0. 自动巡检跳过已确认掉线的平台：不访问网厅、不弹窗、不刷失败次数
-        //    （手动点「立即巡检」/「刷新余额」不走这里，用户想试随时能试）
+        //    （手动点「立即巡检」/「刷新」不走这里，用户想试随时能试）
         const skipReason = trigger === 'auto' ? shouldSkipInAuto(p) : null;
         if (skipReason) {
           // 跳过的原因记一次，避免每小时刷屏；但原因变了必须重发

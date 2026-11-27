@@ -10,7 +10,7 @@ import { spawn } from 'node:child_process';
 import fs from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { dirname, join } from 'node:path';
-import { storageKeyFor, storageFileFor, CARRIER_RULES, ruleKeyFor } from './services/scraper_wallets.mjs';
+import { storageKeyFor, storageFileFor, CARRIER_RULES, ruleKeyFor, STORAGE_KEY_BY_NAME } from './services/scraper_wallets.mjs';
 import { buildSessionStatus, planStaggeredRelogin } from './services/session_status.mjs';
 import { hasPhoneNotify } from './services/push.js';
 import { readSessionMeta } from './services/session_meta.mjs';
@@ -33,6 +33,13 @@ function monitorIntervalMs() {
 }
 
 let loginRunning = false;
+// 陈旧保护（2026-11-26）：登录脚本被强杀/泄漏且 exit 回调没跑时，「登录中」会永远卡住，
+// 页面按钮不可点。登录状态记录起始时间戳，超过硬上限由 /api/login/status 自动复位。
+// 硬上限取 2 小时：8 平台 ×（600s 等待 + 60s 打开）+ 运营商预热 + 登录后自动抓余额，
+// 合法运行最长约 100 分钟，2 小时之内不可能被合法运行触及。
+let loginStartedAt = 0;
+let loginRunSeq = 0; // 运行代次：旧进程迟到的退出回调不得清掉新一次运行的标志
+const LOGIN_STALE_MS = 2 * 60 * 60 * 1000;
 
 // 校验数值型字段（阈值/充值金额/补足目标）：
 // 这些值会直接插入前端 HTML，必须保证是有限数字，否则可被写入非数值字符串
@@ -54,7 +61,13 @@ function storageKeyForPlatform(platform) {
 
 export async function registerRoutes(fastify) {
   // ===== 一键登录 =====
-  fastify.get('/api/login/status', async () => ({ running: loginRunning }));
+  fastify.get('/api/login/status', async () => {
+    if (loginRunning && Date.now() - loginStartedAt > LOGIN_STALE_MS) {
+      console.warn(`[login] 「登录中」已超过硬上限 ${LOGIN_STALE_MS / 60000} 分钟，自动复位（进程可能已泄漏）`);
+      loginRunning = false;
+    }
+    return { running: loginRunning, startedAt: loginStartedAt || undefined };
+  });
 
   // 拉起登录脚本（弹浏览器窗口；不阻塞等待，用户完成登录后脚本自行退出）
   //
@@ -62,7 +75,7 @@ export async function registerRoutes(fastify) {
   //   此前登录脚本存好登录态就结束了，界面上的余额还是上一次巡检留下的旧数。
   //   而巡检周期正好是 1 小时、跟会话寿命（约 60 分钟）一样长，
   //   很容易整个撞在会话刚失效的窗口里——用户看到的是「抓取失败」而不是新余额。
-  //   把「登录」与「余额更新」合成一个动作，用户就不用再点一次「刷新余额」。
+  //   把「登录」与「余额更新」合成一个动作，用户就不用再点一次「刷新」。
   fastify.post('/api/login/run', async (req) => {
     if (loginRunning) {
       return { running: true, message: '已有登录流程正在运行，请先在弹出的窗口完成登录' };
@@ -88,6 +101,8 @@ export async function registerRoutes(fastify) {
       args.push(storageKeyForPlatform(platform));
     }
     loginRunning = true;
+    loginStartedAt = Date.now();
+    const runSeq = ++loginRunSeq;
     try {
       // 脚本输出记录到日志文件，前端可查询登录结果
       fs.mkdirSync(dirname(LOGIN_LOG), { recursive: true });
@@ -113,8 +128,10 @@ export async function registerRoutes(fastify) {
         } catch (err) {
           console.warn(`[login] 登录后自动抓余额失败: ${err.message}`);
         }
-        // 抓完才把「登录中」标记清掉：前端轮询到结束后刷新，看到的就是新余额
-        loginRunning = false;
+        // 抓完才把「登录中」标记清掉：前端轮询到结束后刷新，看到的就是新余额。
+        // 仅当仍是本次运行（代次相同）才清：陈旧复位后用户新开了一次登录时，
+        // 旧进程迟到的 exit 不得把新一次运行的「登录中」标志清掉。
+        if (runSeq === loginRunSeq) loginRunning = false;
       };
       child.on('exit', () => { finish(); });
       child.on('error', () => { loginRunning = false; try { fs.closeSync(out); } catch {} });
@@ -147,6 +164,67 @@ export async function registerRoutes(fastify) {
     const p = db.prepare('SELECT * FROM platforms WHERE id = ?').get(req.params.id);
     if (!p) return { exists: false, key: null };
     return { exists: Boolean(storageFileFor(p.name, p.provider, p.id)), key: storageKeyForPlatform(p) };
+  });
+
+  // 创建前登录态预检（2026-11-27 创建入口规则；同日登录态隔离增强）：
+  // mode=prelogin：规范名平台且尚无同名实例 → 可预登录，登录态文件出现即解锁创建
+  //   （首个实例经旧共用文件回退无缝衔接，见 storageFileFor）。
+  // mode=postcreate：自定义名平台，或该平台已有实例（隔离：新实例登录态按实例 id 独立，
+  //   不能复用旧共用文件预解锁）→ 前端走「先创建实例 → 创建成功后引导登录」，
+  //   此时 exists 恒返回 false，防误报绿灯。
+  fastify.get('/api/login-state-preview', async (req) => {
+    const name = String(req.query.name || '').trim();
+    if (!name) return { exists: false, key: null, canonical: false, mode: 'postcreate' };
+    const provider = String(req.query.provider || '').trim() || null;
+    const canonicalKey = STORAGE_KEY_BY_NAME[name];
+    const canonical = Boolean(canonicalKey);
+    const isCarrier = Boolean(canonicalKey && String(canonicalKey).startsWith('carrier_'));
+    const row = db.prepare('SELECT COUNT(*) AS n FROM platforms WHERE name = ?').get(name);
+    const prelogin = canonical && !isCarrier && Number(row?.n) === 0;
+    return {
+      exists: prelogin ? Boolean(storageFileFor(name, provider, null)) : false,
+      key: storageKeyFor(name, provider, null),
+      canonical,
+      mode: prelogin ? 'prelogin' : 'postcreate',
+    };
+  });
+
+  // 创建前预登录（2026-11-27 创建入口规则）：模板抓取型平台还没建实例，
+  // 用「平台名+provider」派生登录态 key 拉起登录窗口（仅规范名平台可用，见预检注释）。
+  // 与 /api/login/run 共用 loginRunning 防重入与陈旧保护；预登录后不做余额刷新（还没有实例可刷）。
+  fastify.post('/api/login/preview', async (req) => {
+    const b = req.body || {};
+    const name = String(b.name || '').trim();
+    if (!name) return { running: false, message: 'name 必填' };
+    if (!STORAGE_KEY_BY_NAME[name]) {
+      return { running: false, message: '该平台登录态按实例独立保存，请先创建实例再登录' };
+    }
+    // 登录态隔离（2026-11-27）：平台已有实例时新实例登录态按实例 id 独立，预登录会写进
+    // 旧共用文件造成串号 → 拒绝，走先创建实例（拿到 id）再登录。
+    if (Number(db.prepare('SELECT COUNT(*) AS n FROM platforms WHERE name = ?').get(name)?.n) > 0) {
+      return { running: false, message: '该平台已有实例，新实例登录态按实例独立保存，请先创建实例再登录' };
+    }
+    if (loginRunning) {
+      return { running: true, message: '已有登录流程正在运行，请先在弹出的窗口完成登录' };
+    }
+    const provider = String(b.provider || '').trim() || null;
+    const key = storageKeyFor(name, provider, null);
+    loginRunning = true;
+    loginStartedAt = Date.now();
+    const runSeq = ++loginRunSeq;
+    try {
+      fs.mkdirSync(dirname(LOGIN_LOG), { recursive: true });
+      fs.writeFileSync(LOGIN_LOG, `[${new Date().toLocaleString()}] 开始登录：${name}（创建前预登录）\n`);
+      const out = fs.openSync(LOGIN_LOG, 'a');
+      const child = spawn(process.execPath, ['scripts/wallet-login.mjs', key], { cwd: PROJECT_ROOT, detached: true, stdio: ['ignore', out, out] });
+      child.on('exit', () => { try { fs.closeSync(out); } catch {} if (runSeq === loginRunSeq) loginRunning = false; });
+      child.on('error', () => { loginRunning = false; try { fs.closeSync(out); } catch {} });
+      child.unref();
+      return { running: true, key, message: `已打开「${name}」的登录窗口，请在弹出的浏览器里完成登录；登录成功会自动保存并关闭` };
+    } catch (err) {
+      loginRunning = false;
+      return { running: false, message: '启动登录失败：' + err.message };
+    }
   });
 
   // 运营商登录态的两个倒计时：预计存活（关键会话 cookie 过期）与续命（下次访问网厅）
@@ -314,24 +392,41 @@ export async function registerRoutes(fastify) {
   fastify.post('/api/platforms', async (req, reply) => {
     const b = req.body || {};
     if (!b.name) return reply.code(400).send({ error: 'name 必填' });
+    // 创建入口规则（2026-11-27）：API 接口型实例必须填写 API Key 才能创建（必填项填完才能建）。
+    // 仅约束创建；编辑（PUT）不设限，既有实例不受影响；carrier_ 前缀豁免（运营商无 Key，入口已禁用）。
+    if ((b.balance_type || 'api') === 'api' && !String(b.provider || '').startsWith('carrier_') && !String(b.api_key || '').trim()) {
+      return reply.code(400).send({ error: 'API 接口型必须填写 API Key 才能创建实例（浏览器抓取型请选 scrape 类型，无需 Key）' });
+    }
     const bad = validateNumericFields(b);
     if (bad) return reply.code(400).send({ error: bad });
+    // 实例名称：同一平台可建多个实例（多账号/多密钥），用 label 区分；唯一性=（平台名+名称）组合
+    let label = String(b.label || '').trim();
+    // 名称模型（2026-11-27 修订）：名称可选，留空自动按「平台名+序号」编号（如 Deepseek1、Deepseek2）。
+    // 序号从同平台已有实例数+1 起，撞到已用名称自动顺延；不同平台的名称可以重名（唯一性=平台名+名称）。
+    if (!label) {
+      let n = db.prepare('SELECT COUNT(*) AS c FROM platforms WHERE name = ?').get(b.name).c + 1;
+      do { label = `${b.name}${n++}`; } while (db.prepare('SELECT id FROM platforms WHERE name = ? AND label = ?').get(b.name, label));
+    }
+    const dup = db.prepare('SELECT id FROM platforms WHERE name = ? AND label = ?').get(b.name, label);
+    if (dup) return reply.code(409).send({
+      error: `平台「${b.name}」已有同名实例${label ? `「${label}」` : '（无名称）'}。请在列表里找到它点「编辑」修改，或换一个名称建新实例。`,
+    });
     try {
       const info = db.prepare(`
-        INSERT INTO platforms (name, provider, base_url, api_key, api_key_secret, balance_type, balance_api_url,
+        INSERT INTO platforms (name, label, provider, base_url, api_key, api_key_secret, balance_type, balance_api_url,
           balance_json_path, currency, threshold, recharge_amount, target_amount, active, same_account_note, api_url, api_json_path)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
       `).run(
-        b.name, b.provider || 'generic', b.base_url || null, b.api_key || null, b.api_key_secret || null,
+        b.name, label, b.provider || 'generic', b.base_url || null, b.api_key || null, b.api_key_secret || null,
         b.balance_type || 'api', b.balance_api_url || null, b.balance_json_path || null,
         b.currency || 'USD', b.threshold ?? 200, b.recharge_amount ?? 500,
         b.target_amount ?? null, b.active ?? 1,
         b.same_account_note || null, b.api_url || null, b.api_json_path || null
       );
-      return { id: info.lastInsertRowid };
+      return { id: info.lastInsertRowid, label }; // label：留空时为自动编号生成的名称，前端提示用
     } catch (err) {
-      // 同名平台：平台名有唯一约束。快速添加已存在同名模板时会走到这里，
-      // 原始 SQLite 报错（UNIQUE constraint failed: platforms.name）对用户无意义，
+      // 唯一约束（平台名+实例名称组合）兜底：如快速添加与手动新建同时提交的竞态。
+      // 原始 SQLite 报错（UNIQUE constraint failed: platforms.name,label）对用户无意义，
       // 改成可读提示并告诉用户去编辑已有实例。
       if (String(err.message || '').includes('UNIQUE constraint failed')) {
         return reply.code(409).send({
@@ -351,14 +446,21 @@ export async function registerRoutes(fastify) {
     if (bad) return reply.code(400).send({ error: bad });
     const apiKey = b.api_key === undefined ? existing.api_key : b.api_key;
     const apiKeySecret = b.api_key_secret === undefined ? existing.api_key_secret : b.api_key_secret;
+    // 实例名称：同平台可多实例，唯一性=（平台名+名称）组合；改名/改名称时防撞同组合（排除自己）
+    const nextName = b.name ?? existing.name;
+    const nextLabel = b.label === undefined ? (existing.label || '') : String(b.label || '').trim();
+    const dup = db.prepare('SELECT id FROM platforms WHERE name = ? AND label = ? AND id != ?').get(nextName, nextLabel, id);
+    if (dup) return reply.code(409).send({
+      error: `平台「${nextName}」已有同名实例${nextLabel ? `「${nextLabel}」` : '（无名称）'}，请换一个名称`,
+    });
     db.prepare(`
-      UPDATE platforms SET name=?, provider=?, base_url=?, api_key=?, api_key_secret=?, balance_type=?,
+      UPDATE platforms SET name=?, label=?, provider=?, base_url=?, api_key=?, api_key_secret=?, balance_type=?,
         balance_api_url=?, balance_json_path=?, currency=?, threshold=?, recharge_amount=?,
         target_amount=?, active=?, same_account_note=?, api_url=?, api_json_path=?,
         updated_at=datetime('now','localtime')
       WHERE id=?
     `).run(
-      b.name ?? existing.name, b.provider ?? existing.provider, b.base_url ?? existing.base_url,
+      nextName, nextLabel, b.provider ?? existing.provider, b.base_url ?? existing.base_url,
       apiKey, apiKeySecret, b.balance_type ?? existing.balance_type, b.balance_api_url ?? existing.balance_api_url,
       b.balance_json_path ?? existing.balance_json_path, b.currency ?? existing.currency,
       b.threshold ?? existing.threshold, b.recharge_amount ?? existing.recharge_amount,
@@ -421,7 +523,7 @@ export async function registerRoutes(fastify) {
   // ===== 充值单 =====
   fastify.get('/api/orders', async () => {
     return db.prepare(`
-      SELECT o.*, p.name AS platform_name FROM recharge_orders o
+      SELECT o.*, CASE WHEN p.label IS NOT NULL AND p.label != '' THEN p.name || ' · ' || p.label ELSE p.name END AS platform_name FROM recharge_orders o
       JOIN platforms p ON p.id = o.platform_id ORDER BY o.id DESC
     `).all();
   });
@@ -484,7 +586,7 @@ export async function registerRoutes(fastify) {
     const defMonth = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}`;
     const month = /^\d{4}-\d{2}$/.test(req.query.month || '') ? req.query.month : defMonth;
     const rows = db.prepare(`
-      SELECT o.id, p.name AS platform_name, o.amount, o.currency, o.note, o.credited_at
+      SELECT o.id, CASE WHEN p.label IS NOT NULL AND p.label != '' THEN p.name || ' · ' || p.label ELSE p.name END AS platform_name, o.amount, o.currency, o.note, o.credited_at
       FROM recharge_orders o JOIN platforms p ON p.id = o.platform_id
       WHERE o.status = 'credited' AND o.credited_at LIKE ?
       ORDER BY o.credited_at DESC

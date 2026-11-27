@@ -108,7 +108,9 @@ async function waitLoggedIn(page, keyword, { timeoutMs = 10 * 60 * 1000, isCarri
   let closed = false;
   page.on('close', () => { closed = true; });
   while (Date.now() - start < timeoutMs) {
-    if (closed) return false; // 窗口被用户关闭 → 放弃该平台
+    // 窗口被用户关闭 → 放弃该平台。isClosed() 兜底：页面可能在 close 事件监听器
+    // 注册之前就已死（实测 2026-11-26 腾讯云开窗即死，事件永远不来），不能只靠事件。
+    if (closed || page.isClosed()) return false;
     try {
       const url = page.url();
       const text = normalizePageText(await page.evaluate(() => (document.body ? document.body.innerText : '')));
@@ -132,6 +134,15 @@ async function waitLoggedIn(page, keyword, { timeoutMs = 10 * 60 * 1000, isCarri
         stable = 0;
       }
     } catch (e) {
+      const msg = String(e?.message || e);
+      // 终态判定：「Target page, context or browser has been closed」= 页面/上下文/浏览器
+      // 已经死了，不可能恢复。实测（2026-11-26）腾讯云窗口秒死后此异常每 2 秒重复抛出，
+      // 旧代码把它当临时错误继续轮询，死等满 600 秒才跳过，还把后面排队的平台全堵住。
+      // 页面跳转中的临时异常（如 Execution context was destroyed）不含该字样，不受影响。
+      if (page.isClosed() || /has been closed|Target closed/i.test(msg)) {
+        console.log(`  ✗ 窗口/浏览器已关闭，立即跳过该平台（${Math.floor((Date.now() - start) / 1000)}s）。`);
+        return false;
+      }
       // 不能静默吞掉：页面跳转中属正常，但代码错误（如引用了作用域外的变量）会表现为
       // 每轮都抛异常、既不打印诊断也不判定登录，只能干等到超时。上次就踩过这个坑。
       const elapsed = Date.now() - start;
@@ -158,13 +169,19 @@ async function waitLoggedIn(page, keyword, { timeoutMs = 10 * 60 * 1000, isCarri
   const dbTargets = targetsFromDb();
   const allTargets = dbTargets.length ? dbTargets : PRESET_PLATFORMS;
   const matchKey = (p, key) => p.key === key || p.name === key || String(p.id) === key;
+  // 登录态隔离（2026-11-27）：数据库行的登录态 key 都带实例 id（如 minimax_34），
+  // 「创建前预登录」传的是裸规范名 key（如 minimax，要写进旧共用文件）——库里此时没有
+  // 该平台实例，DB 目标必不命中 → 回退预设表按裸 key 匹配。显式 key 命中 DB 行时行为不变；
+  // 同名 DB 行已存在时不再回退预设，避免把多账号实例的登录写回共用文件。
+  const findTarget = (key) => allTargets.find((p) => matchKey(p, key))
+    || PRESET_PLATFORMS.find((p) => matchKey(p, key) && !dbTargets.some((d) => d.name === p.name));
   let targets;
   if (onlyKeys.length) {
     // 按参数顺序排列（而不是按数据库顺序），保证重登顺序就是用户该扫的顺序
     targets = onlyKeys
-      .map((k) => allTargets.find((p) => matchKey(p, k)))
+      .map((k) => findTarget(k))
       .filter(Boolean);
-    const missing = onlyKeys.filter((k) => !allTargets.some((p) => matchKey(p, k)));
+    const missing = onlyKeys.filter((k) => !findTarget(k));
     if (missing.length) {
       console.log(`未找到平台: ${missing.join(', ')}。可用: ${allTargets.map((p) => p.key).join(', ')}`);
       process.exit(1);

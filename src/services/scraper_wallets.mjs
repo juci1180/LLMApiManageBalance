@@ -505,11 +505,18 @@ export function ruleKeyFor(name, provider = null) {
 // 独立维护会话，不同号码的 cookie 互不影响、互不顶号；但我们本地的登录态文件如果只按
 // 运营商命名，第二个号码登录时就会覆盖第一个的登录态文件——两个平台于是共用一份 cookie，
 // 抓到的余额可能是另一个号码的。
-// 因此：只有「内置规范名」沿用固定 key（向后兼容既有登录态文件）；
-// 其余平台（自定义名，如「移动副卡」）按 provider + 平台 id 派生唯一 key。
+// 2026-11-27 登录态隔离：规范名平台（如 MiniMax/腾讯云）多个实例的登录态按实例独立——
+// 带实例 id 时派生「规范名_id」key（如 minimax_34）；独立文件尚不存在时由 storageFileFor
+// 回退旧共用文件保持兼容（见下），该实例完成一次自己的登录后即落独立文件，互不影响。
+// 运营商例外：189.cn 等单会话硬约束（多账号互顶号），规范名永远共用固定文件；运营商多账号
+// 本来就走自定义名（如「移动副卡」）的 provider_id 派生。无 id 的调用（预检/预登录/
+// 登录脚本预设目标）保持规范名 key，供「先登录 → 创建首个实例」链路复用旧共用文件。
 export function storageKeyFor(name, provider = null, id = null) {
   const canonical = STORAGE_KEY_BY_NAME[name];
-  if (canonical) return canonical;
+  if (canonical) {
+    if (canonical.startsWith('carrier_') || id === null || id === undefined) return canonical;
+    return `${canonical}_${id}`;
+  }
   if (id !== null && id !== undefined && provider) return `${provider}_${id}`;
   return provider || name;
 }
@@ -521,7 +528,18 @@ export function storageFileFor(name, fallbackKey = null, id = null) {
   const key = storageKeyFor(name, fallbackKey, id);
   if (!key) return null;
   const f = path.join(STORAGE_DIR, `storage_${key}.json`);
-  return fs.existsSync(f) ? f : null;
+  if (fs.existsSync(f)) return f;
+  // 隔离兼容回退（2026-11-27）：规范名平台的独立文件（规范名_id）还不存在时，
+  // 回退旧共用文件 storage_<规范名>.json —— 存量实例与「先登录后创建」的首个实例不中断；
+  // 该实例完成一次自己的登录后即落独立文件，与其它实例彻底隔离。运营商不回退（共用是硬约束）。
+  if (id !== null && id !== undefined) {
+    const canonical = STORAGE_KEY_BY_NAME[name];
+    if (canonical && !canonical.startsWith('carrier_')) {
+      const legacy = path.join(STORAGE_DIR, `storage_${canonical}.json`);
+      if (fs.existsSync(legacy)) return legacy;
+    }
+  }
+  return null;
 }
 
 // 统一浏览器启动参数：
